@@ -31,7 +31,7 @@ interface ProblemRowDb {
   tags: string
 }
 
-interface SubRowDb {
+export interface SubRowDb {
   id: number
   contest_id: number
   idx: string
@@ -62,14 +62,14 @@ function loadSubs(): SubRowDb[] {
   return all<SubRowDb>('SELECT * FROM submissions ORDER BY created_at ASC')
 }
 
-interface Snapshot {
+export interface Snapshot {
   rows: ContestRow[]
   subs: SubRowDb[]
   problems: RawProblem[]
 }
 
 /** All rows for the enabled contest types with the configured cap, newest first. */
-function snapshot(types?: ContestType[], cap?: number): Snapshot {
+export function snapshot(types?: ContestType[], cap?: number): Snapshot {
   const s = getSettings()
   const enabled = new Set(types ?? s.contestTypes)
   const problems = loadProblems()
@@ -91,7 +91,7 @@ export function contestRows(filter: ContestFilter): ContestRow[] {
     .slice(0, filter.limit)
 }
 
-function lastOpenedByContest(): Map<number, number> {
+export function lastOpenedByContest(): Map<number, number> {
   const rows = all<{ contest_id: number; t: number }>(
     'SELECT contest_id, MAX(last_opened) AS t FROM problem_state WHERE last_opened IS NOT NULL GROUP BY contest_id'
   )
@@ -123,7 +123,7 @@ export function toSubmission(s: SubRowDb): Submission {
 }
 
 /** First accepted time per problem (ms). */
-function firstSolves(subs: SubRowDb[]): Map<string, number> {
+export function firstSolves(subs: SubRowDb[]): Map<string, number> {
   const out = new Map<string, number>()
   for (const s of subs) {
     if (s.verdict !== 'OK') continue
@@ -134,7 +134,7 @@ function firstSolves(subs: SubRowDb[]): Map<string, number> {
 }
 
 /** When each window contest became complete (time of its last first-solve), by contest id. */
-function contestCompletions(rows: ContestRow[], solves: Map<string, number>, windowSize: number): Map<number, number> {
+export function contestCompletions(rows: ContestRow[], solves: Map<string, number>, windowSize: number): Map<number, number> {
   const out = new Map<number, number>()
   for (const r of rows.filter((x) => x.targetTotal > 0).slice(0, windowSize)) {
     if (r.targetSolved !== r.targetTotal) continue

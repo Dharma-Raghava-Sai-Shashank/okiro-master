@@ -1,10 +1,13 @@
 import { safeStorage } from 'electron'
 import { DEFAULT_SETTINGS, type Settings } from '@shared/types'
 import { all, get, run } from './db'
+import { recommendedModel } from './llm/recommend'
 
 export function getSettings(): Settings {
   const rows = all<{ key: string; value: string }>('SELECT key, value FROM settings')
   const out: Record<string, unknown> = { ...DEFAULT_SETTINGS }
+  // Until the user picks one, the chat model follows this Mac's memory (gpt-oss-20b won't fit in 8 GB).
+  out.ollamaModel = recommendedModel()
   for (const r of rows) {
     if (r.key in DEFAULT_SETTINGS) out[r.key] = JSON.parse(r.value)
   }

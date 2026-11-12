@@ -34,6 +34,12 @@ export interface Settings {
   personaOverride: string
   onboarded: boolean
   lastSyncAt: number
+  voiceEnabled: boolean
+  sttModel: string
+  ttsVoice: string
+  ttsSpeed: number
+  voiceEffort: 'low' | 'medium' | 'high'
+  autoListen: boolean
 }
 
 export const DEFAULT_SETTINGS: Settings = {
@@ -56,8 +62,23 @@ export const DEFAULT_SETTINGS: Settings = {
   submitLanguage: 'G++20',
   personaOverride: '',
   onboarded: false,
-  lastSyncAt: 0
+  lastSyncAt: 0,
+  voiceEnabled: true,
+  sttModel: 'onnx-community/whisper-base.en',
+  ttsVoice: 'am_michael',
+  ttsSpeed: 1,
+  voiceEffort: 'low',
+  autoListen: true
 }
+
+export const TTS_VOICES: { id: string; label: string }[] = [
+  { id: 'am_michael', label: 'Michael (US)' },
+  { id: 'am_fenrir', label: 'Fenrir (US)' },
+  { id: 'am_puck', label: 'Puck (US)' },
+  { id: 'bm_george', label: 'George (UK)' },
+  { id: 'bm_fable', label: 'Fable (UK)' },
+  { id: 'system', label: 'macOS system voice' }
+]
 
 export const SPOILER_LEVELS = ['Nudge', 'Hint', 'Approach', 'Pseudocode', 'Full solution'] as const
 
@@ -152,9 +173,42 @@ export interface TestResult {
   message?: string
 }
 
+export interface CompileDiagnostic {
+  line: number
+  col: number
+  severity: 'error' | 'warning' | 'note'
+  message: string
+}
+
 export interface RunResponse {
   compileError?: string
+  diagnostics?: CompileDiagnostic[]
   results: TestResult[]
+}
+
+export interface CustomRunResult {
+  compileError?: string
+  diagnostics?: CompileDiagnostic[]
+  stdout: string
+  stderr: string
+  timeMs: number
+  exitCode: number | null
+  timedOut: boolean
+}
+
+export interface StressRecord {
+  input: string
+  expected: string
+  got: string
+  verdict: string
+  iterations: number
+  at: number
+}
+
+export interface ProblemWork {
+  code: string
+  notes: string
+  activeMs: number
 }
 
 export interface Submission {
@@ -207,6 +261,32 @@ export interface CoachRequest {
   code?: string
   provider: ProviderId
   lastRun?: RunResponse
+  /** Spoken conversation: short spoken-style replies, faster effort. */
+  voice?: boolean
+}
+
+export type AppPage = 'home' | 'contests' | 'calendar' | 'stats' | 'settings'
+export type CalendarView = 'day' | 'week' | 'month' | 'year'
+
+/** Things Arjun (or a voice command) can do in the app. */
+export type UiAction =
+  | { type: 'navigate'; page: AppPage }
+  | { type: 'open_problem'; contestId?: number; index?: string; next?: boolean }
+  | { type: 'run_tests'; test?: number }
+  | { type: 'submit'; confirmed?: boolean }
+  | { type: 'show_calendar'; view: CalendarView }
+  | { type: 'set_spoiler'; level?: number; delta?: number }
+  | { type: 'open_chat'; open: boolean }
+  | { type: 'read_problem'; part: 'statement' | 'input' | 'output' | 'note' | 'sample'; sample?: number }
+  | { type: 'set_provider'; provider: ProviderId }
+  | { type: 'focus_mode'; on?: boolean }
+  | { type: 'stats_summary' }
+  | { type: 'stop_speaking' }
+  | { type: 'stop_listening' }
+
+export interface UiActionRequest {
+  id: string
+  action: UiAction
 }
 
 export type CoachEvent =
@@ -218,7 +298,19 @@ export type CoachEvent =
   | { turnId: string; scope: string; type: 'done'; message: ChatMessage }
   | { turnId: string; scope: string; type: 'error'; error: string }
 
+export interface ModelInfo {
+  name: string
+  capabilities: string[]
+  parameterSize: string
+  /** Billions of parameters, parsed from parameterSize (0 when unknown). */
+  billions: number
+  family: string
+}
+
 export interface LlmStatus {
+  totalMemGb: number
+  recommendedModel: string
+  chatModelInfo: ModelInfo | null
   ollamaInstalled: boolean
   ollamaRunning: boolean
   models: string[]
@@ -296,4 +388,34 @@ export interface MemoryNote {
   tag: string
   note: string
   createdAt: number
+}
+
+export interface Insights {
+  rating: {
+    current: number | null
+    max: number | null
+    delta30d: number
+    /** Projected time (ms) to reach 2100 from the recent trend, or null when not trending up. */
+    projectedMasterAt: number | null
+    perContestSlope: number
+    history: RatingPoint[]
+  }
+  pace: {
+    weekly: { weekStart: string; completed: number; cumulative: number }[]
+    perWeek4: number
+    etaAt: number | null
+  }
+  verdicts: { verdict: string; count: number }[]
+  firstTryRate: number
+  bands: { rating: number; solved: number; total: number; firstTry: number; avgAttempts: number }[]
+  tags: { tag: string; solved: number; failed: number; rate: number }[]
+  focusTags: { tag: string; solved: number; failed: number; rate: number }[]
+  strongTags: { tag: string; solved: number; failed: number; rate: number }[]
+  solveTime: { rating: number; medianMin: number; samples: number }[]
+  byHour: number[]
+  byWeekday: number[]
+  bests: { mostInDay: number; mostInDayDate: string | null; longestStreak: number; hardest: { name: string; rating: number; contestId: number; index: string } | null }
+  recentAcs: { contestId: number; index: string; name: string; rating: number | null; at: number }[]
+  heatmap: DayStat[]
+  read: string[]
 }

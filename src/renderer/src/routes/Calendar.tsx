@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from 'react'
-import { useNavigate } from 'react-router'
+import { useNavigate, useSearchParams } from 'react-router'
 import { ChevronLeft, ChevronRight, Trophy, XCircle, CheckCircle2 } from 'lucide-react'
 import type { DayEvent, DayStat } from '@shared/types'
 import { api } from '../lib/api'
@@ -85,7 +85,12 @@ function EventList({ events }: { events: DayEvent[] }) {
 
 export function CalendarPage() {
   const { settings, dataVersion } = useApp()
+  const [params] = useSearchParams()
   const [view, setView] = useState<View>('month')
+  useEffect(() => {
+    const v = params.get('view')
+    if (v === 'day' || v === 'week' || v === 'month' || v === 'year') setView(v)
+  }, [params])
   const [anchor, setAnchor] = useState(() => new Date())
   const [days, setDays] = useState<DayStat[]>([])
   const [events, setEvents] = useState<Record<string, DayEvent[]>>({})
@@ -115,7 +120,7 @@ export function CalendarPage() {
           : String(anchor.getFullYear())
 
   return (
-    <div className="flex h-full flex-col gap-4 px-6 pb-6">
+    <div className="flex h-full flex-col gap-4 px-6 pb-20">
       <Glass className="flex items-center gap-3 px-4 py-3">
         <div className="flex items-center gap-1">
           <button onClick={() => setAnchor(shift(view, anchor, -1))} className="rounded-lg p-1.5 text-slate-400 hover:bg-white/[0.06] hover:text-slate-200">

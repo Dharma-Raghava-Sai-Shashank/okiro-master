@@ -15,35 +15,57 @@ export function setupMonaco(): typeof monaco {
   ready = true
   window.MonacoEnvironment = { getWorker: () => new EditorWorker() }
 
-  monaco.editor.defineTheme('okiro-dark', {
+  // "okiro-night": calm, high-legibility palette tuned to the app's blues. No rainbow brackets.
+  monaco.editor.defineTheme('okiro-night', {
     base: 'vs-dark',
     inherit: true,
     rules: [
-      { token: 'comment', foreground: '64748b', fontStyle: 'italic' },
-      { token: 'keyword', foreground: 'a78bfa' },
-      { token: 'keyword.directive', foreground: 'f472b6' },
+      { token: '', foreground: 'd6deeb' },
+      { token: 'comment', foreground: '56657d', fontStyle: 'italic' },
+      { token: 'keyword', foreground: 'c4b5fd' },
+      { token: 'keyword.directive', foreground: 'f0abfc' },
+      { token: 'keyword.directive.include', foreground: 'f0abfc' },
       { token: 'string', foreground: '86efac' },
-      { token: 'number', foreground: 'fbbf24' },
-      { token: 'type', foreground: '67e8f9' },
-      { token: 'identifier', foreground: 'dbe4f3' },
-      { token: 'delimiter', foreground: '94a3b8' }
+      { token: 'string.include', foreground: '86efac' },
+      { token: 'number', foreground: 'fdba74' },
+      { token: 'type', foreground: '7dd3fc' },
+      { token: 'identifier', foreground: 'd6deeb' },
+      { token: 'delimiter', foreground: '8b9ab3' },
+      { token: 'operator', foreground: '94a3b8' },
+      { token: 'annotation', foreground: 'f0abfc' }
     ],
     colors: {
-      'editor.background': '#080d18',
-      'editor.foreground': '#dbe4f3',
-      'editorLineNumber.foreground': '#334155',
-      'editorLineNumber.activeForeground': '#93c5fd',
-      'editor.lineHighlightBackground': '#0f172a',
-      'editor.selectionBackground': '#1d4ed866',
-      'editorCursor.foreground': '#60a5fa',
-      'editorIndentGuide.background1': '#1e293b',
-      'editorWidget.background': '#0d1322',
-      'editorSuggestWidget.background': '#0d1322',
+      'editor.background': '#0a1020',
+      'editor.foreground': '#d6deeb',
+      'editorLineNumber.foreground': '#2c3a54',
+      'editorLineNumber.activeForeground': '#7dd3fc',
+      'editor.lineHighlightBackground': '#0f172a80',
+      'editor.lineHighlightBorder': '#00000000',
+      'editor.selectionBackground': '#1e40af66',
+      'editor.inactiveSelectionBackground': '#1e3a8a40',
+      'editor.wordHighlightBackground': '#38bdf81a',
+      'editorCursor.foreground': '#22d3ee',
+      'editorBracketMatch.background': '#22d3ee14',
+      'editorBracketMatch.border': '#22d3ee66',
+      'editorIndentGuide.background1': '#16213a',
+      'editorIndentGuide.activeBackground1': '#24375c',
+      'editorWhitespace.foreground': '#1b2740',
+      'editorGutter.background': '#0a1020',
+      'editorWidget.background': '#0d1424',
+      'editorWidget.border': '#1e293b',
+      'editorSuggestWidget.background': '#0d1424',
       'editorSuggestWidget.border': '#1e293b',
-      'editorSuggestWidget.selectedBackground': '#1d4ed844',
-      'editorHoverWidget.background': '#0d1322',
+      'editorSuggestWidget.selectedBackground': '#1e3a8a66',
+      'editorSuggestWidget.highlightForeground': '#67e8f9',
+      'editorHoverWidget.background': '#0d1424',
       'editorHoverWidget.border': '#1e293b',
-      'scrollbarSlider.background': '#94a3b822'
+      'editorError.foreground': '#fb7185',
+      'editorWarning.foreground': '#fbbf24',
+      'editorStickyScroll.background': '#0b1324',
+      'editorStickyScrollHover.background': '#111c33',
+      'scrollbarSlider.background': '#94a3b81f',
+      'scrollbarSlider.hoverBackground': '#94a3b833',
+      'scrollbar.shadow': '#00000000'
     }
   })
 

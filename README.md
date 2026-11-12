@@ -2,20 +2,33 @@
 
 A dark, Okiro-style desktop app for one goal: **reach Codeforces Master (2100)** by solving every problem rated ≤ 2000 in the last 300 contests, with **Arjun**, a local AI friend and Grandmaster-level coach.
 
-- **Contests:** a cftracker-style grid (Div 1/2/3/4, Educational, Global, Div 1+2), colored by solved, attempted and untouched, with problems above your rating cap dimmed.
+- **Arjun, a voice-first assistant (JARVIS-style):**
+  - Press **⌥Space** (or tap the glowing core) and just talk. He talks back, and you can interrupt him mid-sentence.
+  - The mic is off unless you start a conversation, and everything stays on your Mac. Speech recognition is Whisper `base.en`, his voice is Kokoro, and both run locally.
+  - Drive the app by voice: "open the next problem", "read the problem", "explain it", "run the tests", "submit", "how am I doing?"
+  - He's grounded in a curated algorithms knowledge base (local RAG), the official editorial (hidden from you), and real code execution (`run_tests`, `run_code`, `stress_test`). He remembers your weak spots.
+  - He runs on any Ollama model. The model is picked for your RAM, and you can escalate to Claude for hard problems.
+- **Contests:** a cftracker-style grid (Div 1/2/3/4, Educational, Global, Div 1+2) with clear states:
+  - ✓ solved, ✗ tried, to do (≤ your cap), and hatched above-cap problems
+  - each contest marked DONE, IN PROGRESS or TO DO
 - **Roadmap:** walks the contests from newest to oldest and always knows where you are, e.g. "Round 934 (Div. 2), problem C next".
-- **Workspace:**
-  - the statement, with math rendered
-  - a Monaco C++ editor with clangd autocomplete, diagnostics and contest snippets (`cp`, `dsu`, `segtree`, `modint`, …)
-  - CPH-style tests: samples plus your own custom tests
-  - **Submit** straight to your Codeforces account, with the verdict tracked live
-- **Arjun:**
-  - runs on `gpt-oss-20b` through Ollama, fully local, with a one-click switch to Claude for hard problems
-  - explains the problem, brainstorms with you at the spoiler level you choose, reviews your code, and helps hunt down WAs
-  - grounded in a curated algorithms knowledge base (local RAG), the official editorial (hidden from you), and real code execution (`run_tests`, `run_code`, `stress_test`)
-  - remembers your weak spots between sessions
+- **Workspace (IDE-grade):**
+  - **Problem:** the statement with math rendered, auto-extracted constraint chips (`n ≤ 2·10^5 → O(n log n)`), section tabs, runnable example cards, a timer and a scratchpad.
+  - **Editor:** Monaco with clangd autocomplete and diagnostics, the calm `okiro-night` theme, inline compile errors, a snippet palette (⌘⇧P), and templates.
+  - **Run:**
+    - **Tests:** a side-by-side diff that highlights the first wrong token, and a time bar against the time limit.
+    - **Custom:** run your code on any input.
+    - **Submits:** a verdict timeline for your Codeforces submissions.
+    - **Stress:** Arjun's counterexamples, with a one-click "Add as test".
+  - **Submit** straight to your Codeforces account, with the verdict tracked live.
 - **Calendar:** Day, Week, Month and Year views with daily goals and a heatmap.
-- **Stats:** rating history, progress by level and by rating, tags, streaks, and what Arjun remembers about you.
+- **Stats:**
+  - a rating gauge with a projected date for reaching 2100, and the roadmap pace with an ETA
+  - a 12-month heatmap
+  - a verdict donut and first-try AC rate
+  - target problems by rating band, and focus-area vs strength tags
+  - solve time, when you solve (hour and weekday), and personal bests
+  - "Arjun's read", which he can say out loud
 
 ## Setup on your Mac, step by step
 
@@ -42,7 +55,7 @@ xcrun --find clangd
 ollama --version
 ```
 
-You'll need an Apple Silicon Mac with **16 GB+ RAM** (24 GB recommended; gpt-oss-20b uses about 13 GB) and about **20 GB of free disk**.
+You'll need an Apple Silicon Mac (8 GB works with `qwen3:4b`; more RAM allows a bigger, smarter model) and about **10 GB of free disk**.
 
 ### 2. Get the code
 
@@ -59,15 +72,25 @@ npm test           # unit tests: roadmap math, output checker, contest classifie
 npm run typecheck  # TypeScript, main + UI
 ```
 
-### 4. Download Arjun's models (one time, about 13.3 GB)
+### 4. Download Arjun's models (one time)
 
-You can do this from inside the app on first launch, or now in a terminal:
+Pick the brain for your Mac's memory. Settings also recommends one and shows each model's abilities (🛠 tools · 🧠 thinking).
+
+| Your Mac | Model | Size |
+|---|---|---|
+| 8 GB | `qwen3:4b` (tools + thinking) | ~2.5 GB |
+| 16 GB | `qwen3:8b` | ~5 GB |
+| 24 GB+ | `gpt-oss:20b` | ~13 GB |
 
 ```bash
 ollama serve &                 # skip if the Ollama app is already running
-ollama pull gpt-oss:20b        # Arjun's brain (~13 GB)
+ollama pull qwen3:4b           # Arjun's brain on an 8 GB Mac
 ollama pull nomic-embed-text   # knowledge-base search (~300 MB)
 ```
+
+Models without tool support, such as `qwen2.5-coder:3b`, still work. Arjun then reasons from what's on screen, but he can't run tests or open pages himself.
+
+Arjun's ears and voice, Whisper `base.en` (~206 MB) and Kokoro (~325 MB), download automatically the first time you start a voice conversation, then stay cached.
 
 ### 5. Launch
 
@@ -81,18 +104,37 @@ Then on first launch:
 3. **Settings → Log in to Codeforces.** This is a one-time login inside the app, needed for **Submit**.
 4. *(Optional)* **Settings → Anthropic API key** turns on the ☁️ toggle in Arjun's chat, which sends a conversation to Claude for really hard problems.
 
-### 6. Daily use
+### 6. Talking to Arjun
 
-- **Home** says hi (Arjun greets you each day) and shows **Up next**. Click **Solve**.
+| Do this | How |
+|---|---|
+| Start / end a conversation | **⌥Space**, or tap the Arjun core |
+| Interrupt him | just start talking, or press **Esc** |
+| Full-screen HUD | **⌥⇧Space** |
+| Transcript / typed chat | **⌘J** |
+
+The first time, macOS asks for microphone access; allow it. Use headphones if he hears himself through the speakers.
+
+Things to say:
+- "open the next problem", "open problem 1950 C", "go to stats", "show calendar year view"
+- "read the problem", "read sample 2", "explain it", "give me a hint", "more hints" / "fewer hints"
+- "run the tests", "run sample 1", "submit" (he asks you to confirm, then you say "yes"), "why is it failing?"
+- "how am I doing?", "use Claude" / "use local", "stop", "stop listening"
+
+Anything else goes to Arjun as a normal conversation.
+
+### 7. Daily use
+
+- **Home** shows **Up next** and Arjun's core. Press ⌥Space; he greets you once a day with where you are on the roadmap. Click **Solve** (or say "open the next problem").
 - In the **Workspace**:
-  1. Read the statement, or click **Explain** in Arjun's panel.
-  2. Brainstorm with Arjun. The spoiler slider controls how much he gives away.
+  1. Read the statement, or say "read the problem" / "explain it".
+  2. Brainstorm with Arjun out loud. The spoiler level ("more hints" / "fewer hints", or the slider in the ⌘J transcript) controls how much he gives away.
   3. Write code: type `cp` + Enter for the template, and `dsu`, `segtree`, `modint`, `lazyseg`, … for snippets.
-  4. **⌘↵** runs the samples and your custom tests. **⌘⇧↵** submits to Codeforces.
+  4. **⌘↵** runs the samples and your custom tests (or say "run the tests"). **⌘⇧↵** submits to Codeforces. **⌘.** toggles focus mode.
   5. When a verdict arrives, Arjun reacts. On a WA he can stress-test your code to find a failing input.
 - **Calendar** and **Stats** track your daily goal, streak and progress toward 2100.
 
-### 7. Build a standalone app (optional)
+### 8. Build a standalone app (optional)
 
 ```bash
 npm run build:mac   # creates dist/Okiro CF-<version>.dmg

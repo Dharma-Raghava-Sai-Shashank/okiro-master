@@ -12,3 +12,5 @@ mac:
   target: dmg
   category: public.app-category.education
   identity: null
+  extendInfo:
+    NSMicrophoneUsageDescription: Okiro listens for hands-free voice chat with Arjun, your coach. Audio is processed on this Mac only.

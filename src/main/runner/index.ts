@@ -2,10 +2,11 @@ import { spawn } from 'node:child_process'
 import { createHash } from 'node:crypto'
 import { existsSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
-import type { RunResponse, TestResult, Verdict } from '@shared/types'
+import type { CompileDiagnostic, CustomRunResult, RunResponse, TestResult, Verdict } from '@shared/types'
 import { getSettings } from '../settings'
 import { binDir, includeDir, workDir } from '../paths'
 import { check } from './checker'
+import { parseDiagnostics } from './diagnostics'
 
 const OUTPUT_CAP = 64 * 1024 * 1024
 const STDERR_CAP = 64 * 1024
@@ -67,7 +68,7 @@ export function compileFlags(): string[] {
 }
 
 /** Compile C++ source, caching binaries by (source, flags, compiler). */
-export async function compile(source: string): Promise<{ binary?: string; error?: string }> {
+export async function compile(source: string): Promise<{ binary?: string; error?: string; diagnostics?: CompileDiagnostic[] }> {
   const s = getSettings()
   const flags = compileFlags()
   const hash = createHash('sha256').update(s.compilerPath).update(flags.join(' ')).update(source).digest('hex').slice(0, 24)
@@ -76,7 +77,10 @@ export async function compile(source: string): Promise<{ binary?: string; error?
   const src = join(binDir(), `${hash}.cpp`)
   writeFileSync(src, source)
   const r = await exec(s.compilerPath, [...flags, src, '-o', binary], '', 60_000)
-  if (r.code !== 0) return { error: (r.stderr || r.stdout || 'Compilation failed').replaceAll(src, 'main.cpp') }
+  if (r.code !== 0) {
+    const error = (r.stderr || r.stdout || 'Compilation failed').replaceAll(src, 'main.cpp')
+    return { error, diagnostics: parseDiagnostics(error) }
+  }
   return { binary }
 }
 
@@ -99,7 +103,7 @@ export function verdictOf(r: ExecResult, ok: boolean): Verdict {
 
 export async function runTests(source: string, tests: RunTest[], opts: RunOptions): Promise<RunResponse> {
   const c = await compile(source)
-  if (!c.binary) return { compileError: c.error, results: [] }
+  if (!c.binary) return { compileError: c.error, diagnostics: c.diagnostics, results: [] }
   const limit = Math.round(opts.timeLimitMs * 1.5) + 300
   const results: TestResult[] = []
   for (const t of tests) {
@@ -129,6 +133,21 @@ export async function runTests(source: string, tests: RunTest[], opts: RunOption
     })
   }
   return { results }
+}
+
+export async function runCustom(source: string, input: string, timeLimitMs: number): Promise<CustomRunResult> {
+  const c = await compile(source)
+  if (!c.binary) {
+    return { compileError: c.error, diagnostics: c.diagnostics, stdout: '', stderr: '', timeMs: 0, exitCode: null, timedOut: false }
+  }
+  const r = await exec(c.binary, [], input.endsWith('\n') || !input ? input : `${input}\n`, Math.max(5000, timeLimitMs * 2), workDir())
+  return {
+    stdout: r.stdout.slice(0, 200_000),
+    stderr: r.stderr,
+    timeMs: Math.round(r.timeMs),
+    exitCode: r.code,
+    timedOut: r.timedOut
+  }
 }
 
 export interface StressResult {

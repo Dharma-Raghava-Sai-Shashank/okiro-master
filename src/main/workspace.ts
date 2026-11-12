@@ -1,9 +1,9 @@
 import { readFileSync, mkdirSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
-import type { ProblemRef, RunResponse, TestCase } from '@shared/types'
+import type { CustomRunResult, ProblemRef, ProblemWork, RunResponse, StressRecord, TestCase } from '@shared/types'
 import { all, get, run } from './db'
 import { resourcesDir, workDir } from './paths'
-import { runTests } from './runner'
+import { runCustom, runTests } from './runner'
 
 let template: string | null = null
 
@@ -89,3 +89,56 @@ export async function runProblemTests(ref: ProblemRef, code: string, testIds: nu
 
 /** Most recent local run per problem, so Arjun can see what the student just saw. */
 export const lastRuns = new Map<string, RunResponse>()
+
+export function getWork(ref: ProblemRef): ProblemWork {
+  const code = getCode(ref)
+  const row = get<{ notes: string; active_ms: number }>(
+    'SELECT notes, active_ms FROM problem_state WHERE contest_id = ? AND idx = ?',
+    ref.contestId,
+    ref.index
+  )
+  return { code, notes: row?.notes ?? '', activeMs: row?.active_ms ?? 0 }
+}
+
+export function saveNotes(ref: ProblemRef, notes: string): void {
+  run('UPDATE problem_state SET notes = ? WHERE contest_id = ? AND idx = ?', notes, ref.contestId, ref.index)
+}
+
+/** Adds focused time to the problem's timer and returns the new total (ms). */
+export function addActiveTime(ref: ProblemRef, ms: number): number {
+  const add = Math.max(0, Math.min(ms, 10 * 60 * 1000))
+  run('UPDATE problem_state SET active_ms = active_ms + ? WHERE contest_id = ? AND idx = ?', add, ref.contestId, ref.index)
+  return get<{ active_ms: number }>('SELECT active_ms FROM problem_state WHERE contest_id = ? AND idx = ?', ref.contestId, ref.index)?.active_ms ?? 0
+}
+
+export function runProblemCustom(ref: ProblemRef, code: string, input: string): Promise<CustomRunResult> {
+  return runCustom(code, input, limitsOf(ref).timeLimitMs)
+}
+
+export function saveStress(ref: ProblemRef, rec: StressRecord): void {
+  run(
+    `INSERT OR REPLACE INTO stress_records (contest_id, idx, input, expected, got, verdict, iterations, at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+    ref.contestId,
+    ref.index,
+    rec.input,
+    rec.expected,
+    rec.got,
+    rec.verdict,
+    rec.iterations,
+    rec.at
+  )
+}
+
+export function lastStress(ref: ProblemRef): StressRecord | null {
+  const r = get<{ input: string; expected: string; got: string; verdict: string; iterations: number; at: number }>(
+    'SELECT input, expected, got, verdict, iterations, at FROM stress_records WHERE contest_id = ? AND idx = ?',
+    ref.contestId,
+    ref.index
+  )
+  return r ?? null
+}
+
+export function addTestFromStress(ref: ProblemRef): TestCase | null {
+  const r = lastStress(ref)
+  return r ? addTest(ref, r.input, r.expected) : null
+}

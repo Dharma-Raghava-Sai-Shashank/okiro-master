@@ -1,0 +1,462 @@
+// The voice conversation loop:
+//   mic → VAD → Whisper → (instant command | Arjun) → sentence chunks → Kokoro → speaker
+// with barge-in (talk over Arjun to interrupt), spoken confirmations, an idle timeout, and
+// unloading of the speech models after a while to give memory back on small machines.
+import SttWorker from './stt.worker?worker'
+import TtsWorker from './tts.worker?worker'
+import { problemScope } from '@shared/api'
+import type { CoachAction, CoachEvent, Settings, UiActionRequest } from '@shared/types'
+import { api } from '../lib/api'
+import { useApp, useCoach } from '../lib/store'
+import { useBridge } from './bridge'
+import { useVoice } from './store'
+import { Player } from './player'
+import { Vad } from './vad'
+import { SentenceChunker } from './speech'
+import { matchConfirm, matchIntent } from './intents'
+import { executeAction, type ActionContext } from './actions'
+import type { LoadProgress } from './worker-types'
+
+const IDLE_STOP_MS = 60_000
+const UNLOAD_MS = 5 * 60_000
+// Whisper's well-known outputs for silence and noise.
+const NOISE = /^(\[.*\]|\(.*\)|thank you\.?|thanks for watching[.!]?|you\.?|bye\.?|\.+)$/i
+const TOOL_CAPTION: Record<string, string> = {
+  run_tests: 'Running your tests…',
+  run_code: 'Trying some code…',
+  stress_test: 'Stress testing your solution…',
+  search_knowledge: 'Checking my notes…',
+  get_editorial: 'Thinking about the intended solution…',
+  get_user_history: 'Looking at your history…',
+  app_action: 'On it…'
+}
+
+const set = (patch: Parameters<ReturnType<typeof useVoice.getState>['set']>[0]) => useVoice.getState().set(patch)
+const settings = (): Settings | null => useApp.getState().settings
+
+interface Turn {
+  scope: string
+  turnId: string | null
+  chunker: SentenceChunker
+  done: boolean
+}
+
+class VoiceEngine {
+  private stt: Worker | null = null
+  private tts: Worker | null = null
+  private sttLoad: Promise<void> | null = null
+  private ttsReady = false
+  private player: Player | null = null
+  private vad = new Vad()
+  private transcribeSeq = 0
+  private transcribing = new Map<number, (text: string) => void>()
+  private gen = 0
+  private speakSeq = 0
+  private pendingTts = 0
+  private ttsText = new Map<number, string>()
+  private rtfChecked = false
+  private turn: Turn | null = null
+  private stopAfterSpeech = false
+  private idleTimer: number | null = null
+  private unloadTimer: number | null = null
+  private progress = new Map<string, { loaded: number; total: number }>()
+
+  constructor() {
+    api.on('coach:event', (e) => this.onCoach(e))
+    api.on('coach:ui-action', (req) => void this.onUiAction(req))
+  }
+
+  get active(): boolean {
+    const s = useVoice.getState().state
+    return s !== 'off' && s !== 'error'
+  }
+
+  /** Output and input loudness for the visualizer. */
+  levels(): { out: number; mic: number } {
+    return { out: this.player?.level() ?? 0, mic: this.vad.micLevel() }
+  }
+
+  spectrum(out: Uint8Array<ArrayBuffer>): boolean {
+    if (!this.player?.speaking) return false
+    this.player.spectrum(out)
+    return true
+  }
+
+  toggle(): void {
+    if (this.active) void this.stop()
+    else void this.start()
+  }
+
+  async start(): Promise<void> {
+    if (this.active || useVoice.getState().state === 'loading') return
+    const s = settings()
+    if (!s) return
+    if (this.unloadTimer) window.clearTimeout(this.unloadTimer)
+    set({ state: 'loading', error: '', captionUser: '', captionArjun: '', pendingConfirm: null })
+    this.stopAfterSpeech = false
+    try {
+      if (!(await api.voice.requestMic())) {
+        throw new Error('Microphone access is off. Allow Okiro in System Settings → Privacy & Security → Microphone.')
+      }
+      this.player ??= new Player()
+      this.player.onIdle = () => this.maybeFinish()
+      await this.player.resume()
+      this.loadTts(s)
+      await this.loadStt(s.sttModel)
+      await this.vad.start({
+        onSpeechStart: () => this.onSpeechStart(),
+        onSpeechEnd: (audio) => void this.onSpeechEnd(audio),
+        onMisfire: () => this.backToListening()
+      })
+      set({ state: 'listening', loadProgress: null })
+      this.armIdle()
+      this.maybeGreet()
+    } catch (e) {
+      set({ state: 'error', error: e instanceof Error ? e.message : String(e), loadProgress: null })
+      await this.vad.stop()
+    }
+  }
+
+  async stop(): Promise<void> {
+    this.interrupt()
+    this.clearIdle()
+    await this.vad.stop()
+    set({ state: 'off', pendingConfirm: null, loadProgress: null })
+    this.unloadTimer = window.setTimeout(() => this.unload(), UNLOAD_MS)
+  }
+
+  /** Stop Arjun talking (barge-in or "stop"), cancel his current reply. */
+  interrupt(): void {
+    this.gen++
+    this.tts?.postMessage({ type: 'cancel', gen: this.gen })
+    this.player?.stop()
+    this.pendingTts = 0
+    this.ttsText.clear()
+    if (this.turn) useCoach.getState().stop(this.turn.scope)
+    this.turn = null
+    this.vad.setArjunSpeaking(false)
+  }
+
+  /** Speak long content (a statement, a stats summary) sentence by sentence. */
+  speakLong(text: string): void {
+    const c = new SentenceChunker()
+    for (const s of [...c.push(text), ...c.flush()]) this.say(s)
+  }
+
+  /** Ask Arjun something by voice from a button (e.g. "Explain" on the Problem pane). */
+  async askArjun(action: CoachAction, text = ''): Promise<void> {
+    if (!this.active) await this.start()
+    if (!this.active) return
+    this.interrupt()
+    await this.ask(action, text)
+  }
+
+  /** Say a sample line in the selected voice (Settings preview). Works without the mic. */
+  async preview(): Promise<void> {
+    const s = settings()
+    if (!s) return
+    this.player ??= new Player()
+    this.player.onIdle = () => this.maybeFinish()
+    await this.player.resume()
+    this.loadTts(s)
+    this.interrupt()
+    this.say(this.ttsReady || s.ttsVoice === 'system' ? "Hey, I'm Arjun. Let's get you to Master." : "My neural voice is still downloading, so for now I sound like this.")
+  }
+
+  /** Run a typed/clicked command as if it had been spoken. */
+  async command(text: string): Promise<void> {
+    if (!this.active) await this.start()
+    if (!this.active) return
+    this.interrupt()
+    set({ captionUser: text })
+    await this.handleUtterance(text)
+  }
+
+  // ── models ──────────────────────────────────────────────────────────────
+
+  private loadStt(model: string): Promise<void> {
+    if (this.sttLoad) return this.sttLoad
+    this.stt = new SttWorker()
+    this.sttLoad = new Promise<void>((resolve, reject) => {
+      this.stt!.onmessage = ({ data }: MessageEvent) => {
+        if (data.type === 'progress') this.onProgress('stt', data.p as LoadProgress)
+        else if (data.type === 'ready') {
+          if (data.device) set({ sttDevice: data.device })
+          resolve()
+        } else if (data.type === 'result') {
+          this.transcribing.get(data.id)?.(data.text)
+          this.transcribing.delete(data.id)
+        } else if (data.type === 'error') {
+          if (data.id !== undefined && this.transcribing.has(data.id)) {
+            this.transcribing.get(data.id)!('')
+            this.transcribing.delete(data.id)
+          } else reject(new Error(`Speech recognition failed to load: ${data.message}`))
+        }
+      }
+    }).catch((e: Error) => {
+      this.sttLoad = null
+      this.stt?.terminate()
+      this.stt = null
+      throw e
+    })
+    this.stt.postMessage({ type: 'load', model, ortBase: new URL('./ort/', document.baseURI).href })
+    return this.sttLoad
+  }
+
+  private loadTts(s: Settings): void {
+    if (s.ttsVoice === 'system') {
+      set({ systemVoice: true })
+      return
+    }
+    set({ systemVoice: false })
+    this.rtfChecked = false
+    if (this.tts) return
+    this.tts = new TtsWorker()
+    this.tts.onmessage = ({ data }: MessageEvent) => {
+      if (data.type === 'progress') this.onProgress('tts', data.p as LoadProgress)
+      else if (data.type === 'ready') {
+        this.ttsReady = true
+        set({ ttsDevice: data.device ?? '' })
+      } else if (data.type === 'audio') this.onAudio(data)
+      else if (data.type === 'error') {
+        if (data.id !== undefined && this.ttsText.has(data.id)) {
+          // One sentence failed: say it with the system voice instead.
+          const text = this.ttsText.get(data.id)!
+          this.ttsText.delete(data.id)
+          this.pendingTts = Math.max(0, this.pendingTts - 1)
+          this.player?.speakSystem(text, settings()?.ttsSpeed ?? 1)
+        } else {
+          // The model itself failed to load: use the system voice for this session.
+          set({ systemVoice: true })
+        }
+      }
+    }
+    this.tts.postMessage({ type: 'load', ortBase: new URL('./ort/', document.baseURI).href, voice: s.ttsVoice })
+  }
+
+  private unload(): void {
+    this.stt?.terminate()
+    this.tts?.terminate()
+    this.stt = null
+    this.tts = null
+    this.sttLoad = null
+    this.ttsReady = false
+  }
+
+  private onProgress(kind: string, p: LoadProgress): void {
+    if (p.status !== 'progress' || !p.file || !p.total) return
+    this.progress.set(`${kind}:${p.file}`, { loaded: p.loaded ?? 0, total: p.total })
+    let loaded = 0
+    let total = 0
+    for (const v of this.progress.values()) {
+      loaded += v.loaded
+      total += v.total
+    }
+    const done = total > 0 && loaded >= total
+    set({ loadProgress: done ? null : loaded / total, loadLabel: `Downloading Arjun's voice · ${Math.round(total / 1e6)} MB` })
+  }
+
+  // ── listening ───────────────────────────────────────────────────────────
+
+  private onSpeechStart(): void {
+    this.clearIdle()
+    const st = useVoice.getState().state
+    if (st === 'speaking' || st === 'thinking') this.interrupt()
+    set({ state: 'listening', captionUser: '…' })
+  }
+
+  private async onSpeechEnd(audio: Float32Array): Promise<void> {
+    if (!this.stt) return
+    set({ state: 'transcribing' })
+    const id = ++this.transcribeSeq
+    const text = await new Promise<string>((resolve) => {
+      this.transcribing.set(id, resolve)
+      this.stt!.postMessage({ type: 'transcribe', id, audio }, [audio.buffer])
+    })
+    if (!this.active) return
+    if (!text || NOISE.test(text.trim())) {
+      this.backToListening()
+      return
+    }
+    set({ captionUser: text })
+    await this.handleUtterance(text)
+  }
+
+  private backToListening(): void {
+    if (!this.active) return
+    const st = useVoice.getState().state
+    if (st === 'speaking' || st === 'thinking') return
+    set({ state: 'listening' })
+    this.armIdle()
+  }
+
+  private ctx(): ActionContext {
+    return { voice: true, speakLong: (t) => this.speakLong(t) }
+  }
+
+  private async handleUtterance(text: string): Promise<void> {
+    const pending = useVoice.getState().pendingConfirm
+    if (pending) {
+      set({ pendingConfirm: null })
+      const yes = matchConfirm(text)
+      if (yes !== null) {
+        this.say(yes ? await executeAction(pending, this.ctx()) : 'Okay, not submitting.')
+        return
+      }
+    }
+    const intent = matchIntent(text)
+    if (intent) {
+      const t = intent.action.type
+      if (t === 'stop_listening') {
+        this.stopAfterSpeech = true
+        this.say(intent.ack)
+        return
+      }
+      if (t === 'stop_speaking') {
+        this.interrupt()
+        this.backToListening()
+        return
+      }
+      set({ state: 'thinking' })
+      const result = await executeAction(intent.action, this.ctx())
+      if (t === 'read_problem' || t === 'stats_summary') {
+        if (!this.player?.speaking && this.pendingTts === 0) this.say(result)
+        return
+      }
+      const spoken = intent.ack || result
+      if (spoken) this.say(spoken)
+      else this.backToListening()
+      return
+    }
+    await this.ask('chat', text)
+  }
+
+  // ── talking to Arjun ────────────────────────────────────────────────────
+
+  private async ask(action: CoachAction, text: string): Promise<void> {
+    const ws = useBridge.getState().workspace
+    const scope = ws ? problemScope(ws.ref) : 'home'
+    this.gen++
+    this.tts?.postMessage({ type: 'begin', gen: this.gen })
+    this.turn = { scope, turnId: null, chunker: new SentenceChunker(), done: false }
+    set({ state: 'thinking', captionArjun: '' })
+    await useCoach.getState().send({
+      scope,
+      problem: ws?.ref,
+      text,
+      action,
+      code: ws?.getCode(),
+      provider: useApp.getState().provider,
+      lastRun: ws?.lastRun(),
+      voice: true
+    })
+  }
+
+  private maybeGreet(): void {
+    const today = new Date().toDateString()
+    let last = ''
+    try {
+      last = localStorage.getItem('okiro.voiceGreeted') ?? ''
+      localStorage.setItem('okiro.voiceGreeted', today)
+    } catch {
+      // storage unavailable: greet anyway
+    }
+    const onHome = window.location.hash === '' || window.location.hash === '#/' || window.location.hash === '#'
+    if (last !== today && onHome) void this.ask('greet', '')
+  }
+
+  private onCoach(e: CoachEvent): void {
+    const t = this.turn
+    if (!t || e.scope !== t.scope) return
+    if (t.turnId === null) t.turnId = e.turnId
+    else if (e.turnId !== t.turnId) return
+    switch (e.type) {
+      case 'text':
+        for (const s of t.chunker.push(e.delta)) this.say(s)
+        break
+      case 'tool-start':
+        if (!this.player?.speaking) set({ captionArjun: TOOL_CAPTION[e.name] ?? 'Working on it…' })
+        break
+      case 'done':
+        for (const s of t.chunker.flush()) this.say(s)
+        t.done = true
+        this.maybeFinish()
+        break
+      case 'error':
+        t.done = true
+        this.say(/ollama|fetch|ECONNREFUSED/i.test(e.error) ? "I can't reach my local model. Check Ollama in Settings." : "Sorry, something went wrong on my side.")
+        break
+    }
+  }
+
+  private async onUiAction(req: UiActionRequest): Promise<void> {
+    const result = await executeAction(req.action, { voice: this.active, speakLong: (t) => this.speakLong(t) })
+    await api.coach.uiResult(req.id, result || 'Done.')
+  }
+
+  // ── speaking ────────────────────────────────────────────────────────────
+
+  private say(text: string): void {
+    if (!text.trim() || !this.player) return
+    this.clearIdle()
+    this.vad.setArjunSpeaking(true)
+    const s = settings()
+    const speed = s?.ttsSpeed ?? 1
+    if (useVoice.getState().systemVoice || !this.ttsReady || !this.tts) {
+      set({ state: 'speaking', captionArjun: text })
+      this.player.speakSystem(text, speed)
+      return
+    }
+    set({ state: 'speaking' })
+    const id = ++this.speakSeq
+    this.pendingTts++
+    this.ttsText.set(id, text)
+    this.tts.postMessage({ type: 'speak', gen: this.gen, id, text, voice: s?.ttsVoice ?? 'am_michael', speed })
+  }
+
+  private onAudio(data: { gen: number; id: number; pcm: Float32Array; sr: number; synthMs: number }): void {
+    if (data.gen !== this.gen) return
+    this.pendingTts = Math.max(0, this.pendingTts - 1)
+    const text = this.ttsText.get(data.id) ?? ''
+    this.ttsText.delete(data.id)
+    set({ captionArjun: text })
+    this.player?.play(data.pcm, data.sr)
+    const audioMs = (data.pcm.length / data.sr) * 1000
+    if (!this.rtfChecked && audioMs > 800) {
+      this.rtfChecked = true
+      // Slower than real time would make speech stutter on this machine: use the system voice.
+      if (data.synthMs / audioMs > 0.9) set({ systemVoice: true })
+    }
+  }
+
+  private maybeFinish(): void {
+    if (this.pendingTts > 0 || this.player?.speaking) return
+    if (this.turn && !this.turn.done) {
+      set({ state: 'thinking' })
+      return
+    }
+    this.turn = null
+    this.vad.setArjunSpeaking(false)
+    if (!this.active) return
+    if (this.stopAfterSpeech || (!settings()?.autoListen && !useVoice.getState().pendingConfirm)) {
+      void this.stop()
+      return
+    }
+    set({ state: 'listening' })
+    this.armIdle()
+  }
+
+  private armIdle(): void {
+    this.clearIdle()
+    this.idleTimer = window.setTimeout(() => {
+      if (useVoice.getState().state === 'listening') void this.stop()
+    }, IDLE_STOP_MS)
+  }
+
+  private clearIdle(): void {
+    if (this.idleTimer) window.clearTimeout(this.idleTimer)
+    this.idleTimer = null
+  }
+}
+
+export const voice = new VoiceEngine()

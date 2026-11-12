@@ -117,5 +117,17 @@ CREATE TABLE IF NOT EXISTS user_memory (
   created_at INTEGER NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS stress_records (
+  contest_id INTEGER NOT NULL,
+  idx TEXT NOT NULL,
+  input TEXT NOT NULL,
+  expected TEXT NOT NULL,
+  got TEXT NOT NULL,
+  verdict TEXT NOT NULL,
+  iterations INTEGER NOT NULL,
+  at INTEGER NOT NULL,
+  PRIMARY KEY (contest_id, idx)
+);
+
 CREATE TABLE IF NOT EXISTS kv_cache (key TEXT PRIMARY KEY, value TEXT NOT NULL, fetched_at INTEGER NOT NULL);
 `

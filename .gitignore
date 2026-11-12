@@ -4,3 +4,5 @@ dist
 *.log
 .DS_Store
 .claude/settings.local.json
+src/renderer/public/ort
+src/renderer/public/vad

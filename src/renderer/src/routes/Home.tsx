@@ -6,7 +6,11 @@ import { api } from '../lib/api'
 import { useApp } from '../lib/store'
 import { cx, greeting, isoDate, rankName, ratingColor } from '../lib/format'
 import { Button, Empty, Glass, Label, ProgressRing, RatingPill, Spinner } from '../components/ui'
-import { ChatPanel } from '../components/ChatPanel'
+import { ArjunCore } from '../components/arjun/ArjunCore'
+import { Captions, SUGGESTIONS } from '../components/arjun/VoiceLayer'
+import { voice } from '../voice/engine'
+import { useVoice } from '../voice/store'
+import { MessageSquareText, Maximize2 } from 'lucide-react'
 
 function lastNDays(n: number): { from: string; to: string } {
   const to = new Date()
@@ -17,6 +21,7 @@ function lastNDays(n: number): { from: string; to: string } {
 
 export function HomePage() {
   const { settings, user, dataVersion, llm } = useApp()
+  const { state, loadProgress, set: setVoice } = useVoice()
   const nav = useNavigate()
   const [rm, setRm] = useState<Roadmap | null>(null)
   const [week, setWeek] = useState<DayStat[]>([])
@@ -161,8 +166,37 @@ export function HomePage() {
         </div>
       </div>
 
-      <Glass className="min-h-0 overflow-hidden">
-        <ChatPanel scope="home" autoGreet={!!llm?.ollamaRunning && !!llm.chatModelReady} />
+      <Glass className="relative flex min-h-0 flex-col items-center overflow-hidden px-6 pb-6 pt-5">
+        <div className="hud-grid pointer-events-none absolute inset-0 opacity-60" />
+        <div className="relative flex w-full items-center justify-between">
+          <div className="hud-font text-[10.5px] uppercase tracking-[0.28em] text-cyan-400/80">Arjun</div>
+          <div className="flex gap-1">
+            <button title="Transcript (⌘J)" onClick={() => setVoice({ chatOpen: true })} className="rounded-lg p-1.5 text-slate-500 hover:bg-white/[0.06] hover:text-cyan-200">
+              <MessageSquareText className="size-4" />
+            </button>
+            <button title="Full screen (⌥⇧Space)" onClick={() => setVoice({ hudOpen: true })} className="rounded-lg p-1.5 text-slate-500 hover:bg-white/[0.06] hover:text-cyan-200">
+              <Maximize2 className="size-4" />
+            </button>
+          </div>
+        </div>
+        <div className="relative flex flex-1 flex-col items-center justify-center gap-6">
+          <ArjunCore size={300} state={state} progress={loadProgress} onClick={() => voice.toggle()} />
+          <Captions big />
+          {llm && (!llm.ollamaRunning || !llm.chatModelReady) && (
+            <div className="hud-font max-w-xs text-center text-[11px] text-amber-300/90">Arjun's brain isn't ready — start Ollama and pull a model in Settings.</div>
+          )}
+        </div>
+        <div className="relative flex flex-wrap justify-center gap-1.5">
+          {SUGGESTIONS.slice(0, 5).map((t) => (
+            <button
+              key={t}
+              onClick={() => void voice.command(t)}
+              className="hud-font rounded-full border border-cyan-400/15 bg-cyan-400/[0.05] px-2.5 py-1 text-[11px] text-cyan-100/75 transition hover:border-cyan-300/45 hover:text-cyan-50"
+            >
+              “{t}”
+            </button>
+          ))}
+        </div>
       </Glass>
     </div>
   )

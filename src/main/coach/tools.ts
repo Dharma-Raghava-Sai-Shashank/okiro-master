@@ -3,11 +3,13 @@ import { z } from 'zod'
 import type { ProblemRef, RunResponse } from '@shared/types'
 import type { LlmTool } from '../llm/types'
 import { exec, compile, stressTest } from '../runner'
-import { currentCode, limitsOf, runProblemTests } from '../workspace'
+import { currentCode, limitsOf, runProblemTests, saveStress } from '../workspace'
 import { getEditorial } from '../cf/scraper'
 import { searchKb } from './kb'
 import { tagHistory } from '../progress'
 import { recentNotes } from './memory'
+import { requestUiAction } from './ui-bridge'
+import type { UiAction } from '@shared/types'
 
 export interface ToolContext {
   problem?: ProblemRef
@@ -104,6 +106,7 @@ const tools = {
       if (r.error) return r.error
       if (r.ok) return `No difference found in ${r.iterations} random tests.`
       const ce = r.counterexample!
+      saveStress(ctx.problem!, { ...ce, iterations: r.iterations, at: Date.now() })
       return `Found a failing input after ${r.iterations} tests (${ce.verdict}).\nInput:\n${clip(ce.input, 1500)}\nBrute force output:\n${clip(ce.expected, 800)}\nSolution output:\n${clip(ce.got, 800)}`
     }
   }),
@@ -137,6 +140,46 @@ const tools = {
     }
   }),
 
+  app_action: tool({
+    def: {
+      name: 'app_action',
+      description:
+        'Do something in the app for the student: open a page, open a problem (or the next one on the roadmap), run the tests, start a submission (the student confirms), change the calendar view or spoiler level, or open the chat transcript. Use it only when the student asks for it.',
+      parameters: {
+        type: 'object',
+        properties: {
+          action: {
+            type: 'string',
+            enum: ['navigate', 'open_problem', 'open_next_problem', 'run_tests', 'submit', 'show_calendar', 'set_spoiler', 'open_chat', 'read_problem']
+          },
+          page: { type: 'string', enum: ['home', 'contests', 'calendar', 'stats', 'settings'] },
+          contestId: { type: 'number' },
+          index: { type: 'string', description: 'Problem letter, e.g. "C" or "D1"' },
+          view: { type: 'string', enum: ['day', 'week', 'month', 'year'] },
+          level: { type: 'number', description: 'Spoiler level 0-4' }
+        },
+        required: ['action']
+      }
+    },
+    schema: z.object({
+      action: z.enum(['navigate', 'open_problem', 'open_next_problem', 'run_tests', 'submit', 'show_calendar', 'set_spoiler', 'open_chat', 'read_problem']),
+      page: z.enum(['home', 'contests', 'calendar', 'stats', 'settings']).optional(),
+      contestId: z.number().int().positive().optional(),
+      index: z
+        .string()
+        .regex(/^[A-Za-z][0-9]?$/)
+        .optional(),
+      view: z.enum(['day', 'week', 'month', 'year']).optional(),
+      level: z.number().int().min(0).max(4).optional()
+    }),
+    needsProblem: false,
+    run: async (a) => {
+      const action = toUiAction(a)
+      if (!action) return 'Missing details for that action (e.g. which page or problem).'
+      return requestUiAction(action)
+    }
+  }),
+
   get_user_history: tool({
     def: {
       name: 'get_user_history',
@@ -155,7 +198,43 @@ const tools = {
   })
 }
 
+function toUiAction(a: {
+  action: string
+  page?: 'home' | 'contests' | 'calendar' | 'stats' | 'settings'
+  contestId?: number
+  index?: string
+  view?: 'day' | 'week' | 'month' | 'year'
+  level?: number
+}): UiAction | null {
+  switch (a.action) {
+    case 'navigate':
+      return a.page ? { type: 'navigate', page: a.page } : null
+    case 'open_problem':
+      return a.contestId && a.index ? { type: 'open_problem', contestId: a.contestId, index: a.index.toUpperCase() } : { type: 'open_problem', next: true }
+    case 'open_next_problem':
+      return { type: 'open_problem', next: true }
+    case 'run_tests':
+      return { type: 'run_tests' }
+    case 'submit':
+      return { type: 'submit' }
+    case 'show_calendar':
+      return { type: 'show_calendar', view: a.view ?? 'month' }
+    case 'set_spoiler':
+      return a.level !== undefined ? { type: 'set_spoiler', level: a.level } : null
+    case 'open_chat':
+      return { type: 'open_chat', open: true }
+    case 'read_problem':
+      return { type: 'read_problem', part: 'statement' }
+    default:
+      return null
+  }
+}
+
 type ToolName = keyof typeof tools
+
+export const TOOL_NAMES = new Set<string>()
+
+for (const k of Object.keys(tools)) TOOL_NAMES.add(k)
 
 export function toolDefs(hasProblem: boolean): LlmTool[] {
   return Object.values(tools)

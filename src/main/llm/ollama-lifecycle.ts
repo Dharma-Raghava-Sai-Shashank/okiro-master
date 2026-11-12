@@ -1,6 +1,6 @@
 import { spawn, type ChildProcess } from 'node:child_process'
 import { existsSync } from 'node:fs'
-import type { PullProgress } from '@shared/types'
+import type { ModelInfo, PullProgress } from '@shared/types'
 import { getSettings } from '../settings'
 import { ndjson } from './ollama'
 
@@ -38,7 +38,8 @@ export async function startOllama(): Promise<boolean> {
   if (!bin) return false
   const host = new URL(getSettings().ollamaHost)
   child = spawn(bin, ['serve'], {
-    env: { ...process.env, OLLAMA_HOST: `127.0.0.1:${host.port || '11434'}` },
+    // One model in memory at a time keeps 8 GB machines responsive.
+    env: { ...process.env, OLLAMA_HOST: `127.0.0.1:${host.port || '11434'}`, OLLAMA_MAX_LOADED_MODELS: '1' },
     stdio: 'ignore',
     detached: false
   })
@@ -76,10 +77,48 @@ export async function embed(texts: string[]): Promise<number[][]> {
   const s = getSettings()
   const res = await fetch(`${s.ollamaHost}/api/embed`, {
     method: 'POST',
-    body: JSON.stringify({ model: s.embedModel, input: texts, keep_alive: '10m' }),
+    // Unload soon after searching so the chat model keeps the memory.
+    body: JSON.stringify({ model: s.embedModel, input: texts, keep_alive: '30s' }),
     signal: AbortSignal.timeout(120_000)
   })
   if (!res.ok) throw new Error(`Embedding failed: ${(await res.text()).slice(0, 200)}`)
   const body = (await res.json()) as { embeddings: number[][] }
   return body.embeddings
 }
+
+const infoCache = new Map<string, ModelInfo>()
+
+export function parseBillions(size: string): number {
+  const m = /([\d.]+)\s*([BM])/i.exec(size)
+  if (!m) return 0
+  const v = parseFloat(m[1])
+  return m[2].toUpperCase() === 'M' ? v / 1000 : v
+}
+
+/** Capabilities and size of a pulled model, from /api/show (cached). */
+export async function modelInfo(model: string): Promise<ModelInfo | null> {
+  const hit = infoCache.get(model)
+  if (hit) return hit
+  try {
+    const res = await fetch(`${getSettings().ollamaHost}/api/show`, {
+      method: 'POST',
+      body: JSON.stringify({ model }),
+      signal: AbortSignal.timeout(5000)
+    })
+    if (!res.ok) return null
+    const body = (await res.json()) as { capabilities?: string[]; details?: { parameter_size?: string; family?: string } }
+    const info: ModelInfo = {
+      name: model,
+      capabilities: body.capabilities ?? ['completion'],
+      parameterSize: body.details?.parameter_size ?? '',
+      billions: parseBillions(body.details?.parameter_size ?? ''),
+      family: body.details?.family ?? ''
+    }
+    infoCache.set(model, info)
+    return info
+  } catch {
+    return null
+  }
+}
+
+export { recommendedModel, totalMemGb } from './recommend'

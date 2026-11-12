@@ -1,4 +1,4 @@
-import { ipcMain, shell, type BrowserWindow } from 'electron'
+import { ipcMain, shell, systemPreferences, type BrowserWindow } from 'electron'
 import { z } from 'zod'
 import type { OkiroEvents } from '@shared/api'
 import type { CoachRequest, ContestFilter, LlmStatus, ProblemRef, Settings } from '@shared/types'
@@ -8,11 +8,28 @@ import { getProblem, getEditorial } from './cf/scraper'
 import { openLogin } from './cf/browser'
 import { submit } from './cf/submit'
 import { contestRows, dayEvents, dayStats, roadmap, submissionsFor, summary } from './progress'
-import { addTest, deleteTest, getCode, listTests, problemFile, runProblemTests, saveCode, updateTest } from './workspace'
+import {
+  addActiveTime,
+  addTest,
+  addTestFromStress,
+  deleteTest,
+  getCode,
+  getWork,
+  lastStress,
+  listTests,
+  problemFile,
+  runProblemCustom,
+  runProblemTests,
+  saveCode,
+  saveNotes,
+  updateTest
+} from './workspace'
 import * as coach from './coach'
 import { recentNotes } from './coach/memory'
+import { resolveUiAction, setUiEmitter } from './coach/ui-bridge'
+import { insights } from './progress/insights'
 import { indexKb, kbCounts } from './coach/kb'
-import { hasModel, listModels, ollamaBinary, ollamaRunning, pullModel, startOllama } from './llm/ollama-lifecycle'
+import { hasModel, listModels, modelInfo, ollamaBinary, ollamaRunning, pullModel, recommendedModel, startOllama, totalMemGb } from './llm/ollama-lifecycle'
 import { sendToClangd, startClangd } from './lsp/clangd'
 
 const refSchema = z.object({ contestId: z.number().int().positive(), index: z.string().regex(/^[A-Z][0-9]?$/) })
@@ -70,6 +87,12 @@ export function registerIpc(getWindow: () => BrowserWindow | null): void {
   handle('workspace:deleteTest', (id) => deleteTest(z.number().int().parse(id)))
   handle('workspace:run', (r, code, ids) => runProblemTests(ref(r), str(code), ids == null ? null : z.array(z.number().int()).parse(ids)))
   handle('workspace:filePath', (r) => problemFile(ref(r)))
+  handle('workspace:work', (r) => getWork(ref(r)))
+  handle('workspace:saveNotes', (r, notes) => saveNotes(ref(r), str(notes, 200_000)))
+  handle('workspace:addActiveTime', (r, ms) => addActiveTime(ref(r), z.number().parse(ms)))
+  handle('workspace:runCustom', (r, code, input) => runProblemCustom(ref(r), str(code), str(input, 10_000_000)))
+  handle('workspace:lastStress', (r) => lastStress(ref(r)))
+  handle('workspace:addTestFromStress', (r) => addTestFromStress(ref(r)))
   handle('workspace:submit', (r, code) => {
     const p = ref(r)
     void submit(p, str(code), (e) => {
@@ -84,6 +107,15 @@ export function registerIpc(getWindow: () => BrowserWindow | null): void {
   handle('coach:history', (scope) => coach.history(str(scope, 200)))
   handle('coach:clear', (scope) => coach.clearHistory(str(scope, 200)))
   handle('coach:memory', () => recentNotes(50))
+  handle('coach:uiResult', (id, result) => resolveUiAction(str(id, 100), str(result, 2000)))
+  setUiEmitter((req) => emit('coach:ui-action', req))
+
+  // voice
+  handle('voice:requestMic', async () => {
+    if (process.platform !== 'darwin') return true
+    if (systemPreferences.getMediaAccessStatus('microphone') === 'granted') return true
+    return systemPreferences.askForMediaAccess('microphone')
+  })
 
   // local LLM
   const status = async (): Promise<LlmStatus> => {
@@ -91,11 +123,15 @@ export function registerIpc(getWindow: () => BrowserWindow | null): void {
     const running = await ollamaRunning()
     const models = running ? await listModels() : []
     const kb = kbCounts()
+    const chatModelReady = hasModel(models, s.ollamaModel)
     return {
+      totalMemGb: totalMemGb(),
+      recommendedModel: recommendedModel(),
+      chatModelInfo: chatModelReady ? await modelInfo(s.ollamaModel) : null,
       ollamaInstalled: running || !!ollamaBinary(),
       ollamaRunning: running,
       models,
-      chatModelReady: hasModel(models, s.ollamaModel),
+      chatModelReady,
       embedModelReady: hasModel(models, s.embedModel),
       kbChunks: kb.chunks,
       kbEmbedded: kb.embedded,
@@ -122,11 +158,13 @@ export function registerIpc(getWindow: () => BrowserWindow | null): void {
   handle('llm:indexKb', () => {
     void reindex()
   })
+  handle('llm:modelInfo', (model) => modelInfo(str(model, 200)))
 
   // stats
   handle('stats:days', (from, to) => dayStats(str(from, 10), str(to, 10)))
   handle('stats:dayEvents', (date) => dayEvents(str(date, 10)))
   handle('stats:summary', () => summary())
+  handle('stats:insights', () => insights())
 
   // clangd
   ipcMain.handle('lsp:start', (e) => startClangd(e.sender))

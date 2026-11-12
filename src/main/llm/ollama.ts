@@ -31,12 +31,6 @@ export async function* ndjson<T>(res: Response): AsyncGenerator<T> {
   if (buf.trim()) yield JSON.parse(buf) as T
 }
 
-function thinkParam(model: string, effort: 'low' | 'medium' | 'high'): string | boolean | undefined {
-  if (model.startsWith('gpt-oss')) return effort
-  if (/^(qwen3|deepseek-r1|magistral|phi4-reasoning)/.test(model)) return true
-  return undefined
-}
-
 function toOllama(system: string, messages: LlmMessage[]): Record<string, unknown>[] {
   const out: Record<string, unknown>[] = [{ role: 'system', content: system }]
   for (const m of messages) {
@@ -52,14 +46,20 @@ function toOllama(system: string, messages: LlmMessage[]): Record<string, unknow
   return out
 }
 
+export interface OllamaOptions {
+  /** Ollama's `think` value: an effort string for gpt-oss, true/false for other thinking models, omitted otherwise. */
+  think?: string | boolean
+  numCtx?: number
+  keepAlive?: string
+}
+
 export class OllamaProvider implements LlmProvider {
   readonly label: string
 
   constructor(
     private host: string,
     private model: string,
-    private effort: 'low' | 'medium' | 'high',
-    private numCtx = 24576
+    private opts: OllamaOptions = {}
   ) {
     this.label = model
   }
@@ -69,14 +69,13 @@ export class OllamaProvider implements LlmProvider {
       model: this.model,
       messages: toOllama(req.system, req.messages),
       stream: true,
-      keep_alive: '10m',
-      options: { num_ctx: this.numCtx }
+      keep_alive: this.opts.keepAlive ?? '5m',
+      options: { num_ctx: this.opts.numCtx ?? 16384 }
     }
     if (req.tools.length) {
       body.tools = req.tools.map((t) => ({ type: 'function', function: { name: t.name, description: t.description, parameters: t.parameters } }))
     }
-    const think = thinkParam(this.model, this.effort)
-    if (think !== undefined) body.think = think
+    if (this.opts.think !== undefined) body.think = this.opts.think
     const res = await fetch(`${this.host}/api/chat`, { method: 'POST', body: JSON.stringify(body), signal: req.signal })
     if (!res.ok) throw new Error(`Ollama: ${(await res.text()).slice(0, 300)}`)
     let content = ''

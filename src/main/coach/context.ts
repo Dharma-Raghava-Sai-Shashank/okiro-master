@@ -13,16 +13,31 @@ import { lastRuns } from '../workspace'
 import { recentNotes } from './memory'
 import { searchKb } from './kb'
 import { summarizeRun } from './tools'
+import { analyzeConstraints } from '@shared/constraints'
 
 const clip = (s: string, n: number) => (s.length > n ? `${s.slice(0, n)}\n…(truncated)` : s)
 
-let persona: string | null = null
+const personas = new Map<string, string>()
 
-export function personaText(s: Settings): string {
+export function personaText(s: Settings, compact: boolean): string {
   if (s.personaOverride.trim()) return s.personaOverride
-  persona ??= readFileSync(join(resourcesDir(), 'persona', 'arjun.md'), 'utf8')
-  return persona
+  const file = compact ? 'arjun-compact.md' : 'arjun.md'
+  if (!personas.has(file)) personas.set(file, readFileSync(join(resourcesDir(), 'persona', file), 'utf8'))
+  return personas.get(file)!
 }
+
+export interface ContextOptions {
+  /** Small local model: shorter prompt and tighter limits. */
+  compact: boolean
+  /** Whether the model can call tools in this turn. */
+  tools: boolean
+}
+
+const VOICE_RULES = `# You are speaking out loud
+The student is talking to you by voice and hears your reply through a speaker. So:
+- Speak naturally in short sentences. Usually 2–4 sentences, then stop and let them talk.
+- No markdown, no bullet lists, no headings, no emojis. Never read code aloud; if code helps, say "I've put it on screen" and put it in a code block after your spoken part.
+- Say numbers and math the way a person would: "n up to two hundred thousand", "n log n".`
 
 const SPOILER_RULES = [
   'Nudge: only ask guiding questions and point at what to look at. No techniques, no approach.',
@@ -58,12 +73,12 @@ async function progressBlock(s: Settings): Promise<string> {
   return lines.filter(Boolean).join('\n')
 }
 
-function problemBlock(p: ProblemDetail, showTags: boolean): string {
+function problemBlock(p: ProblemDetail, showTags: boolean, maxChars: number): string {
   return [
     `${p.contestId}${p.index} — ${p.name} (rating ${p.rating ?? 'unrated'})${showTags && p.tags.length ? ` — tags (spoiler): ${p.tags.join(', ')}` : ''}`,
     `Time limit ${p.timeLimitMs / 1000} s, memory ${p.memoryMb} MB${p.interactive ? ', INTERACTIVE problem' : ''}${p.anyCase ? ', YES/NO in any case accepted' : ''}.`,
     '',
-    clip(p.statementText, 9000)
+    clip(p.statementText, maxChars)
   ].join('\n')
 }
 
@@ -72,18 +87,30 @@ export interface TurnContext {
   problem?: ProblemDetail
 }
 
-export async function buildContext(req: CoachRequest, s: Settings): Promise<TurnContext> {
-  const parts: string[] = [personaText(s)]
+export async function buildContext(req: CoachRequest, s: Settings, opts: ContextOptions): Promise<TurnContext> {
+  const lim = opts.compact
+    ? { statement: 5000, code: 6000, run: 1800, kb: 2, kbChars: 1200, editorial: 3000, notes: 4 }
+    : { statement: 9000, code: 9000, run: 3500, kb: 4, kbChars: 2200, editorial: 6000, notes: 8 }
+  const parts: string[] = [personaText(s, opts.compact)]
+  if (req.voice) {
+    parts.push(
+      opts.tools
+        ? `${VOICE_RULES}\n- If they ask you to go somewhere or do something in the app (open a problem, run the tests, show stats), use the app_action tool, then confirm in a few words.`
+        : VOICE_RULES
+    )
+  }
   parts.push(`# Progress (facts from the database — quote exactly)\n${await progressBlock(s)}`)
 
-  const notes = recentNotes(8)
+  const notes = recentNotes(lim.notes)
   if (notes.length) parts.push(`# What you remember about the student\n${notes.map((n) => `- ${n.note}`).join('\n')}`)
 
   let problem: ProblemDetail | undefined
   if (req.problem) {
     try {
       problem = await getProblem(req.problem, false)
-      parts.push(`# Current problem\n${problemBlock(problem, true)}`)
+      parts.push(`# Current problem\n${problemBlock(problem, true, lim.statement)}`)
+      const facts = analyzeConstraints(problem.statementText)
+      if (facts.budget) parts.push(`# Complexity budget (computed by the app from the constraints)\n${facts.budget}`)
     } catch (e) {
       parts.push(
         `# Current problem\n${req.problem.contestId}${req.problem.index} — the statement could not be loaded (${e instanceof Error ? e.message : String(e)}). Tell the student and work from what they describe.`
@@ -91,10 +118,10 @@ export async function buildContext(req: CoachRequest, s: Settings): Promise<Turn
     }
 
     const code = req.code ?? ''
-    if (code.trim()) parts.push(`# Student's current code\n\`\`\`cpp\n${clip(code, 9000)}\n\`\`\``)
+    if (code.trim()) parts.push(`# Student's current code\n\`\`\`cpp\n${clip(code, lim.code)}\n\`\`\``)
 
     const run = req.lastRun ?? lastRuns.get(`${req.problem.contestId}${req.problem.index}`)
-    if (run) parts.push(`# Latest local test run\n${clip(summarizeRun(run), 3500)}`)
+    if (run) parts.push(`# Latest local test run (computed by the app)\n${clip(summarizeRun(run), lim.run)}`)
 
     const subs = submissionsFor(req.problem).slice(0, 6)
     if (subs.length) {
@@ -106,20 +133,26 @@ export async function buildContext(req: CoachRequest, s: Settings): Promise<Turn
     }
 
     const query = problem ? `${problem.name}\n${problem.tags.join(' ')}\n${problem.statementText.slice(0, 1500)}\n${req.text}` : req.text
-    const kb = await searchKb(query, 4, problem?.tags ?? [])
-    if (kb.length) parts.push(`# Reference notes (your knowledge base)\n${kb.map((k) => clip(k.text, 2200)).join('\n\n---\n\n')}`)
+    const kb = await searchKb(query, lim.kb, problem?.tags ?? [])
+    if (kb.length) parts.push(`# Reference notes (your knowledge base)\n${kb.map((k) => clip(k.text, lim.kbChars)).join('\n\n---\n\n')}`)
 
     const ed = get<{ text: string; exact: number }>('SELECT text, exact FROM editorials WHERE contest_id = ? AND idx = ?', req.problem.contestId, req.problem.index)
     if (ed?.text) {
       parts.push(
-        `# HIDDEN EDITORIAL — for you only. Never quote it; reveal only what the spoiler level allows.\n${ed.exact ? '' : '(Section boundaries were unclear; parts of the contest editorial.)\n'}${clip(ed.text, 6000)}`
+        `# HIDDEN EDITORIAL — for you only. Never quote it; reveal only what the spoiler level allows.\n${ed.exact ? '' : '(Section boundaries were unclear; parts of the contest editorial.)\n'}${clip(ed.text, lim.editorial)}`
       )
-    } else {
+    } else if (opts.tools) {
       parts.push('# Editorial\nNot loaded yet. Call get_editorial if you need to confirm the intended solution.')
     }
   } else if (req.text.trim()) {
-    const kb = await searchKb(req.text, 3)
-    if (kb.length) parts.push(`# Reference notes (your knowledge base)\n${kb.map((k) => clip(k.text, 2000)).join('\n\n---\n\n')}`)
+    const kb = await searchKb(req.text, Math.min(3, lim.kb), [])
+    if (kb.length) parts.push(`# Reference notes (your knowledge base)\n${kb.map((k) => clip(k.text, lim.kbChars)).join('\n\n---\n\n')}`)
+  }
+
+  if (!opts.tools) {
+    parts.push(
+      '# Tools\nYou cannot run code or call functions in this chat. Reason from the test results and code above. Answer in plain words — never output JSON or a function call.'
+    )
   }
 
   const level = Math.max(0, Math.min(4, s.spoilerLevel))

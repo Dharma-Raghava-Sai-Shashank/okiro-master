@@ -5,6 +5,7 @@ import { useApp } from '../lib/store'
 import { api } from '../lib/api'
 import { cx, ratingColor, timeAgo } from '../lib/format'
 import { Flame } from './ui'
+import { VoiceLayer } from './arjun/VoiceLayer'
 
 const NAV = [
   { to: '/', icon: Home, label: 'Home' },
@@ -84,6 +85,7 @@ export function Shell() {
           <Outlet />
         </main>
       </div>
+      <VoiceLayer />
     </div>
   )
 }

@@ -1,10 +1,13 @@
 import { useEffect, useState, type ReactNode } from 'react'
-import { KeyRound, LogIn } from 'lucide-react'
-import { CONTEST_TYPE_LABELS, SPOILER_LEVELS, type ContestType, type Settings } from '@shared/types'
+import { KeyRound, LogIn, Volume2, Wrench, Brain, AlertTriangle, Download } from 'lucide-react'
+import { CONTEST_TYPE_LABELS, SPOILER_LEVELS, TTS_VOICES, type ContestType, type Settings } from '@shared/types'
 import { api } from '../lib/api'
 import { useApp } from '../lib/store'
+import { cx } from '../lib/format'
 import { Button, Chip, Glass, Label } from '../components/ui'
 import { ModelSetup } from './Onboarding'
+import { voice } from '../voice/engine'
+import { useVoice } from '../voice/store'
 
 function Section({ title, children, hint }: { title: string; hint?: string; children: ReactNode }) {
   return (
@@ -66,7 +69,7 @@ export function SettingsPage() {
     void updateSettings({ contestTypes: settings.contestTypes.includes(t) ? settings.contestTypes.filter((x) => x !== t) : [...settings.contestTypes, t] })
 
   return (
-    <div className="h-full overflow-y-auto px-6 pb-10">
+    <div className="h-full overflow-y-auto px-6 pb-24">
       <div className="mx-auto flex max-w-4xl flex-col gap-5">
         <Section title="Codeforces">
           <Row label="Handle" hint="Your solved problems come from this account">
@@ -114,8 +117,54 @@ export function SettingsPage() {
           </Row>
         </Section>
 
+        <Section title="Arjun · voice" hint="Talk to Arjun hands-free: ⌥Space starts and ends a conversation, Esc interrupts him, ⌥⇧Space opens the full-screen view, ⌘J shows the transcript.">
+          <Row label="Voice assistant">
+            <label className="flex items-center gap-2 text-xs text-slate-300">
+              <input type="checkbox" checked={settings.voiceEnabled} onChange={(e) => void updateSettings({ voiceEnabled: e.target.checked })} className="accent-cyan-500" />
+              Enabled
+            </label>
+          </Row>
+          <Row label="Arjun's voice" hint="Natural voice runs on this Mac (one-time ~325 MB download)">
+            {TTS_VOICES.map((v) => (
+              <Chip key={v.id} active={settings.ttsVoice === v.id} onClick={() => void updateSettings({ ttsVoice: v.id })}>
+                {v.label}
+              </Chip>
+            ))}
+            <Button size="sm" onClick={() => void voice.preview()}>
+              <Volume2 className="size-3.5" /> Preview
+            </Button>
+          </Row>
+          <Row label="Speaking speed">
+            <input
+              type="range"
+              min={0.8}
+              max={1.3}
+              step={0.05}
+              value={settings.ttsSpeed}
+              onChange={(e) => void updateSettings({ ttsSpeed: Number(e.target.value) })}
+              className="w-48 accent-cyan-500"
+            />
+            <span className="text-xs tabular-nums text-slate-400">{settings.ttsSpeed.toFixed(2)}×</span>
+          </Row>
+          <Row label="Keep listening" hint="After Arjun answers, keep the mic open for your reply">
+            <label className="flex items-center gap-2 text-xs text-slate-300">
+              <input type="checkbox" checked={settings.autoListen} onChange={(e) => void updateSettings({ autoListen: e.target.checked })} className="accent-cyan-500" />
+              Hands-free conversation
+            </label>
+          </Row>
+          <Row label="Thinking in voice chat" hint="Low starts talking fastest. Explain / hint / review always think more.">
+            {(['low', 'medium', 'high'] as const).map((e) => (
+              <Chip key={e} active={settings.voiceEffort === e} onClick={() => void updateSettings({ voiceEffort: e })}>
+                {e}
+              </Chip>
+            ))}
+          </Row>
+          <VoiceStatus />
+        </Section>
+
         <Section title="Arjun · local model" hint="Runs on your Mac through Ollama. Private and offline.">
           <ModelSetup compact />
+          <ModelAdvice />
           <Row label="Chat model" hint="Any model you've pulled in Ollama">
             <Field k="ollamaModel" width="w-56" />
             {llm?.models.length ? (
@@ -136,7 +185,7 @@ export function SettingsPage() {
           <Row label="Embedding model">
             <Field k="embedModel" width="w-56" />
           </Row>
-          <Row label="Reasoning effort" hint="Higher thinks longer before answering">
+          <Row label="Reasoning effort" hint="Higher thinks longer before answering (text chat)">
             {(['low', 'medium', 'high'] as const).map((e) => (
               <Chip key={e} active={settings.reasoningEffort === e} onClick={() => void updateSettings({ reasoningEffort: e })}>
                 {e}
@@ -218,6 +267,73 @@ export function SettingsPage() {
           <span>Data lives in ~/Library/Application Support/Okiro CF</span>
         </div>
       </div>
+    </div>
+  )
+}
+
+function VoiceStatus() {
+  const { sttDevice, ttsDevice, systemVoice, loadProgress, loadLabel, error } = useVoice()
+  return (
+    <div className="rounded-2xl border border-white/[0.06] bg-white/[0.02] px-4 py-3 text-[12px] text-slate-400">
+      {loadProgress != null ? (
+        <span className="text-cyan-200">
+          {loadLabel} · {Math.round(loadProgress * 100)}%
+        </span>
+      ) : sttDevice || ttsDevice ? (
+        <span>
+          Ears: Whisper on <b className="text-slate-200">{sttDevice || '—'}</b> · Voice: <b className="text-slate-200">{systemVoice ? 'macOS system voice' : `Kokoro on ${ttsDevice || '—'}`}</b>
+        </span>
+      ) : (
+        <span>Speech models (~530 MB) download the first time you start a conversation, then stay cached on this Mac.</span>
+      )}
+      {error && <div className="mt-1 text-amber-300">{error}</div>}
+    </div>
+  )
+}
+
+function ModelAdvice() {
+  const { llm, settings, updateSettings, refreshLlm } = useApp()
+  if (!llm || !settings) return null
+  const caps = llm.chatModelInfo?.capabilities ?? []
+  const rec = llm.recommendedModel
+  const hasRec = llm.models.some((m) => m === rec || m.startsWith(`${rec}`))
+  return (
+    <div className="flex flex-col gap-2">
+      {llm.chatModelInfo && (
+        <div className="flex flex-wrap items-center gap-2 text-[12px] text-slate-400">
+          <span className="font-mono text-slate-200">{settings.ollamaModel}</span>
+          {llm.chatModelInfo.parameterSize && <span className="rounded-md bg-white/[0.06] px-1.5 py-0.5">{llm.chatModelInfo.parameterSize}</span>}
+          <span className={cx('flex items-center gap-1 rounded-md px-1.5 py-0.5', caps.includes('tools') ? 'bg-emerald-500/12 text-emerald-300' : 'bg-white/[0.04] text-slate-500 line-through')}>
+            <Wrench className="size-3" /> tools
+          </span>
+          <span className={cx('flex items-center gap-1 rounded-md px-1.5 py-0.5', caps.includes('thinking') ? 'bg-violet-500/12 text-violet-300' : 'bg-white/[0.04] text-slate-500 line-through')}>
+            <Brain className="size-3" /> thinking
+          </span>
+        </div>
+      )}
+      {llm.chatModelInfo && !caps.includes('tools') && (
+        <div className="flex items-start gap-2 rounded-xl border border-amber-400/20 bg-amber-500/[0.07] px-3 py-2 text-[12px] text-amber-100/90">
+          <AlertTriangle className="mt-0.5 size-3.5 shrink-0" />
+          This model can't call tools, so Arjun can't run your tests, stress-test or open pages himself — he'll reason from what's on screen. Small coder models are also weak at coaching.
+        </div>
+      )}
+      {settings.ollamaModel !== rec && (
+        <div className="flex flex-wrap items-center gap-2 rounded-xl border border-cyan-400/20 bg-cyan-400/[0.06] px-3 py-2 text-[12px] text-cyan-100/90">
+          Recommended for your {llm.totalMemGb} GB Mac: <b className="font-mono">{rec}</b> (tools + thinking).
+          <div className="flex-1" />
+          {hasRec ? (
+            <Button size="sm" onClick={() => void updateSettings({ ollamaModel: rec }).then(refreshLlm)}>
+              Use it
+            </Button>
+          ) : (
+            llm.ollamaRunning && (
+              <Button size="sm" onClick={() => void api.llm.pull(rec)}>
+                <Download className="size-3.5" /> Download
+              </Button>
+            )
+          )}
+        </div>
+      )}
     </div>
   )
 }
