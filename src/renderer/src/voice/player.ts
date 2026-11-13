@@ -25,7 +25,8 @@ export class Player {
     if (this.ctx.state !== 'running') await this.ctx.resume()
   }
 
-  play(pcm: Float32Array, sampleRate: number): void {
+  /** `gapMs` adds a breath of silence after this chunk (slow, paced reading). */
+  play(pcm: Float32Array, sampleRate: number, gapMs = 0): void {
     const buf = this.ctx.createBuffer(1, pcm.length, sampleRate)
     buf.getChannelData(0).set(pcm)
     const src = this.ctx.createBufferSource()
@@ -33,7 +34,7 @@ export class Player {
     src.connect(this.analyser)
     const at = Math.max(this.ctx.currentTime + 0.03, this.next)
     src.start(at)
-    this.next = at + buf.duration
+    this.next = at + buf.duration + gapMs / 1000
     this.live.add(src)
     src.onended = () => {
       this.live.delete(src)

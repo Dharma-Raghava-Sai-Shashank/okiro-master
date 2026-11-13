@@ -23,6 +23,9 @@ const UNLOAD_MS = 5 * 60_000
 const NOISE = /^(\[.*\]|\(.*\)|thank you\.?|thanks for watching[.!]?|you\.?|bye\.?|\.+)$/i
 // Pre-synthesized acknowledgements played the instant a question goes to the model (worker caches these).
 export const FILLERS = ['Mm-hm.', 'Hmm, let me think.', 'Okay, one sec.', 'Let me see.']
+// Paced delivery for explanations and read-alouds: slower speech, and a breath between sentences.
+const PACED_SPEED = 0.85
+const PACED_GAP_MS = 500
 const TOOL_CAPTION: Record<string, string> = {
   run_tests: 'Running your tests…',
   run_code: 'Trying some code…',
@@ -48,6 +51,8 @@ interface Turn {
   turnId: string | null
   chunker: SentenceChunker
   done: boolean
+  /** Explanations are spoken slower, with pauses between sentences. */
+  paced: boolean
 }
 
 class VoiceEngine {
@@ -73,6 +78,7 @@ class VoiceEngine {
   private lastSpokenAt = 0
   private bargedIn = false
   private fillerIds = new Set<number>()
+  private pacedIds = new Set<number>()
   private lastFiller = -1
   // Speech buffered across pauses until the send word ("okiro") is heard.
   private pendingUtterance = ''
@@ -191,15 +197,16 @@ class VoiceEngine {
     this.pendingTts = 0
     this.ttsText.clear()
     this.fillerIds.clear()
+    this.pacedIds.clear()
     if (this.turn) useCoach.getState().stop(this.turn.scope)
     this.turn = null
     this.vad.setArjunSpeaking(false)
   }
 
-  /** Speak long content (a statement, a stats summary) sentence by sentence. */
+  /** Speak long content (a statement, a stats summary) sentence by sentence, slowly, with pauses. */
   speakLong(text: string): void {
     const c = new SentenceChunker()
-    for (const s of [...c.push(text), ...c.flush()]) this.say(s)
+    for (const s of [...c.push(text), ...c.flush()]) this.say(s, true)
   }
 
   /** Ask Arjun something by voice from a button (e.g. "Explain" on the Problem pane). */
@@ -428,7 +435,7 @@ class VoiceEngine {
       set({ state: 'thinking' })
       const result = await executeAction(intent.action, this.ctx())
       if (t === 'read_problem' || t === 'stats_summary') {
-        if (!this.player?.speaking && this.pendingTts === 0) this.say(result)
+        if (!this.player?.speaking && this.pendingTts === 0) this.say(result, true)
         return
       }
       const spoken = intent.ack || result
@@ -446,7 +453,7 @@ class VoiceEngine {
     const scope = ws ? problemScope(ws.ref) : 'home'
     this.gen++
     this.tts?.postMessage({ type: 'begin', gen: this.gen })
-    this.turn = { scope, turnId: null, chunker: new SentenceChunker(), done: false }
+    this.turn = { scope, turnId: null, chunker: new SentenceChunker(), done: false, paced: action === 'explain' }
     set({ state: 'thinking', captionArjun: '' })
     if (action !== 'greet') this.sayFiller()
     await useCoach.getState().send({
@@ -482,13 +489,13 @@ class VoiceEngine {
     switch (e.type) {
       case 'text':
         if (this.tm && !this.tm.firstToken) this.tm.firstToken = performance.now()
-        for (const s of t.chunker.push(e.delta)) this.say(s)
+        for (const s of t.chunker.push(e.delta)) this.say(s, t.paced)
         break
       case 'tool-start':
         if (!this.player?.speaking) set({ captionArjun: TOOL_CAPTION[e.name] ?? 'Working on it…' })
         break
       case 'done':
-        for (const s of t.chunker.flush()) this.say(s)
+        for (const s of t.chunker.flush()) this.say(s, t.paced)
         t.done = true
         this.maybeFinish()
         break
@@ -527,7 +534,7 @@ class VoiceEngine {
     this.tts.postMessage({ type: 'filler', gen: this.gen, id, idx, voice: settings()?.ttsVoice ?? 'af_heart' })
   }
 
-  private say(text: string): void {
+  private say(text: string, paced = false): void {
     if (!text.trim() || !this.player) return
     this.clearIdle()
     this.lastSpokenAt = Date.now()
@@ -535,7 +542,7 @@ class VoiceEngine {
     if (this.recentArjunPhrases.length > 30) this.recentArjunPhrases.shift()
     this.vad.setArjunSpeaking(true)
     const s = settings()
-    const speed = s?.ttsSpeed ?? 1
+    const speed = (s?.ttsSpeed ?? 1) * (paced ? PACED_SPEED : 1)
     if (useVoice.getState().systemVoice || !this.tts) {
       set({ state: 'speaking', captionArjun: text })
       this.player.speakSystem(text, speed)
@@ -548,6 +555,7 @@ class VoiceEngine {
     const id = ++this.speakSeq
     this.pendingTts++
     this.ttsText.set(id, text)
+    if (paced) this.pacedIds.add(id)
     this.tts.postMessage({ type: 'speak', gen: this.gen, id, text, voice: s?.ttsVoice ?? 'af_heart', speed })
   }
 
@@ -557,7 +565,7 @@ class VoiceEngine {
     const text = this.ttsText.get(data.id) ?? ''
     this.ttsText.delete(data.id)
     set({ captionArjun: text })
-    this.player?.play(data.pcm, data.sr)
+    this.player?.play(data.pcm, data.sr, this.pacedIds.delete(data.id) ? PACED_GAP_MS : 0)
     if (this.fillerIds.delete(data.id)) return // a filler isn't the reply's first audio
     this.markFirstAudio()
   }
