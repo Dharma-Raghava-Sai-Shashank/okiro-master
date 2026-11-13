@@ -18,11 +18,21 @@ ctx.onmessage = async ({ data }: MessageEvent) => {
       env.useBrowserCache = true
       if (env.backends.onnx.wasm) env.backends.onnx.wasm.wasmPaths = data.ortBase
       const webgpu = await hasWebGpu()
-      asr = (await pipeline('automatic-speech-recognition', model, {
-        device: webgpu ? 'webgpu' : 'wasm',
-        dtype: webgpu ? { encoder_model: 'fp32', decoder_model_merged: 'q4' } : { encoder_model: 'q8', decoder_model_merged: 'q8' },
-        progress_callback: (p: unknown) => ctx.postMessage({ type: 'progress', p })
-      })) as unknown as Asr
+      const make = async () =>
+        (await pipeline('automatic-speech-recognition', model, {
+          device: webgpu ? 'webgpu' : 'wasm',
+          dtype: webgpu ? { encoder_model: 'fp32', decoder_model_merged: 'q4' } : { encoder_model: 'q8', decoder_model_merged: 'q8' },
+          progress_callback: (p: unknown) => ctx.postMessage({ type: 'progress', p })
+        })) as unknown as Asr
+      try {
+        asr = await make()
+      } catch (e) {
+        // An interrupted download leaves truncated bytes in Cache Storage, and every later load
+        // replays them ("protobuf parsing failed"). Clear the cache and fetch fresh, once.
+        if (!/protobuf|corrupt|invalid/i.test(String(e))) throw e
+        await caches.delete('transformers-cache')
+        asr = await make()
+      }
       // Warm-up compiles the GPU shaders so the first real utterance is fast.
       await asr(new Float32Array(16_000))
       ctx.postMessage({ type: 'ready', device: webgpu ? 'webgpu' : 'wasm' })

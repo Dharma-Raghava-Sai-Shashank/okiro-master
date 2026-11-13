@@ -16,11 +16,22 @@ let fillerVoice = ''
 async function load(ortBase: string, voice: string): Promise<void> {
   kokoroEnv.wasmPaths = ortBase
   const webgpu = await hasWebGpu()
-  tts = await KokoroTTS.from_pretrained('onnx-community/Kokoro-82M-v1.0-ONNX', {
-    dtype: webgpu ? 'fp32' : 'q8',
-    device: webgpu ? 'webgpu' : 'wasm',
-    progress_callback: (p: unknown) => ctx.postMessage({ type: 'progress', p })
-  })
+  const make = () =>
+    KokoroTTS.from_pretrained('onnx-community/Kokoro-82M-v1.0-ONNX', {
+      dtype: webgpu ? 'fp32' : 'q8',
+      device: webgpu ? 'webgpu' : 'wasm',
+      progress_callback: (p: unknown) => ctx.postMessage({ type: 'progress', p })
+    })
+  try {
+    tts = await make()
+  } catch (e) {
+    // Truncated bytes from an interrupted download poison the cache ("protobuf parsing failed"):
+    // clear and fetch fresh, once.
+    if (!/protobuf|corrupt|invalid/i.test(String(e))) throw e
+    await caches.delete('transformers-cache')
+    await caches.delete('kokoro-voices')
+    tts = await make()
+  }
   await tts.generate('Ready.', { voice: voice as GenerateOptions['voice'] })
   ctx.postMessage({ type: 'ready', device: webgpu ? 'webgpu' : 'wasm' })
   // Pre-synthesize the acknowledgement clips so they can play the instant a question lands.
