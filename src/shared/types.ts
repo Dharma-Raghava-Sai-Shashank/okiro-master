@@ -40,6 +40,8 @@ export interface Settings {
   ttsSpeed: number
   voiceEffort: 'low' | 'medium' | 'high'
   autoListen: boolean
+  /** Arjun buffers speech through pauses and only replies once this word is said. Empty = send on every pause. */
+  endWord: string
 }
 
 export const DEFAULT_SETTINGS: Settings = {
@@ -68,7 +70,8 @@ export const DEFAULT_SETTINGS: Settings = {
   ttsVoice: 'af_heart',
   ttsSpeed: 1,
   voiceEffort: 'low',
-  autoListen: true
+  autoListen: true,
+  endWord: 'okiro'
 }
 
 export const TTS_VOICES: { id: string; label: string }[] = [

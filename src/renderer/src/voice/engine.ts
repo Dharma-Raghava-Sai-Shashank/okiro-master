@@ -35,6 +35,13 @@ const TOOL_CAPTION: Record<string, string> = {
 
 const set = (patch: Parameters<ReturnType<typeof useVoice.getState>['set']>[0]) => useVoice.getState().set(patch)
 const settings = (): Settings | null => useApp.getState().settings
+const escapeRe = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+// "okiro" the way speech recognition may spell it: "Okiro", "O'Kiro", "o kiro"…
+const fuzzyWord = (w: string) =>
+  w
+    .split('')
+    .map(escapeRe)
+    .join("['\\s-]?")
 
 interface Turn {
   scope: string
@@ -57,7 +64,6 @@ class VoiceEngine {
   private speakSeq = 0
   private pendingTts = 0
   private ttsText = new Map<number, string>()
-  private rtfChecked = false
   private turn: Turn | null = null
   private stopAfterSpeech = false
   private idleTimer: number | null = null
@@ -68,6 +74,8 @@ class VoiceEngine {
   private bargedIn = false
   private fillerIds = new Set<number>()
   private lastFiller = -1
+  // Speech buffered across pauses until the send word ("okiro") is heard.
+  private pendingUtterance = ''
   // One voice turn's latency marks: speech end → transcript → first LLM token → first audio out.
   private tm: { speechEnd: number; stt: number; firstToken: number; firstAudio: number } | null = null
 
@@ -169,6 +177,7 @@ class VoiceEngine {
   async stop(): Promise<void> {
     this.interrupt()
     this.clearIdle()
+    this.pendingUtterance = ''
     await this.vad.stop()
     set({ state: 'off', pendingConfirm: null, loadProgress: null })
     this.unloadTimer = window.setTimeout(() => this.unload(), UNLOAD_MS)
@@ -210,7 +219,8 @@ class VoiceEngine {
     await this.player.resume()
     this.loadTts(s)
     this.interrupt()
-    this.say(this.ttsReady || s.ttsVoice === 'system' ? "Hey, I'm Arjun. Let's get you to Master." : "My neural voice is still downloading, so for now I sound like this.")
+    if (this.ttsReady || s.ttsVoice === 'system') this.say("Hey, I'm Arjun. Let's get you to Master.")
+    else this.player.speakSystem('My real voice is still downloading — one moment.', s.ttsSpeed)
   }
 
   /** Run a typed/clicked command as if it had been spoken. */
@@ -262,7 +272,6 @@ class VoiceEngine {
       return
     }
     set({ systemVoice: false })
-    this.rtfChecked = false
     if (this.tts) return
     this.tts = new TtsWorker()
     this.tts.onmessage = ({ data }: MessageEvent) => {
@@ -273,11 +282,13 @@ class VoiceEngine {
       } else if (data.type === 'audio') this.onAudio(data)
       else if (data.type === 'error') {
         if (data.id !== undefined && this.ttsText.has(data.id)) {
-          // One sentence failed: say it with the system voice instead (a failed filler is just dropped).
+          // One sentence failed to synthesize: show it as a caption and move on. Never switch
+          // voices mid-reply — Arjun keeps one voice.
           const text = this.ttsText.get(data.id)!
           this.ttsText.delete(data.id)
           this.pendingTts = Math.max(0, this.pendingTts - 1)
-          if (!this.fillerIds.delete(data.id)) this.player?.speakSystem(text, settings()?.ttsSpeed ?? 1)
+          if (!this.fillerIds.delete(data.id)) set({ captionArjun: text })
+          this.maybeFinish()
         } else {
           // The model itself failed to load: use the system voice for this session.
           set({ systemVoice: true })
@@ -343,6 +354,38 @@ class VoiceEngine {
       this.backToListening()
       return
     }
+
+    // Send-word mode: keep listening through pauses; only hand the whole thing to Arjun
+    // once the send word ("okiro") ends an utterance. Instant commands and yes/no
+    // confirmations still work on their own, without the word.
+    const endWord = (settings()?.endWord ?? '').trim()
+    if (endWord && !useVoice.getState().pendingConfirm) {
+      const re = new RegExp(`[\\s,]*\\b${fuzzyWord(endWord)}\\b[\\s.!?,]*$`, 'i')
+      const combined = this.pendingUtterance ? `${this.pendingUtterance} ${text}` : text
+      if (!re.test(text)) {
+        if (!this.pendingUtterance && matchIntent(text)) {
+          // A lone quick command ("run the tests", "stop") executes immediately.
+          set({ captionUser: text })
+          await this.handleUtterance(text)
+          return
+        }
+        this.pendingUtterance = combined
+        set({ captionUser: `${combined} …` })
+        this.backToListening()
+        return
+      }
+      this.pendingUtterance = ''
+      const full = combined.replace(re, '').trim()
+      if (!full) {
+        // They said just the word: nothing buffered, nothing to send.
+        this.backToListening()
+        return
+      }
+      set({ captionUser: full })
+      await this.handleUtterance(full)
+      return
+    }
+
     set({ captionUser: text })
     await this.handleUtterance(text)
   }
@@ -493,12 +536,14 @@ class VoiceEngine {
     this.vad.setArjunSpeaking(true)
     const s = settings()
     const speed = s?.ttsSpeed ?? 1
-    if (useVoice.getState().systemVoice || !this.ttsReady || !this.tts) {
+    if (useVoice.getState().systemVoice || !this.tts) {
       set({ state: 'speaking', captionArjun: text })
       this.player.speakSystem(text, speed)
       this.markFirstAudio()
       return
     }
+    // Kokoro still loading: queue anyway — the worker speaks it after the load finishes,
+    // so Arjun always sounds like herself instead of switching voices mid-conversation.
     set({ state: 'speaking' })
     const id = ++this.speakSeq
     this.pendingTts++
@@ -515,12 +560,6 @@ class VoiceEngine {
     this.player?.play(data.pcm, data.sr)
     if (this.fillerIds.delete(data.id)) return // a filler isn't the reply's first audio
     this.markFirstAudio()
-    const audioMs = (data.pcm.length / data.sr) * 1000
-    if (!this.rtfChecked && audioMs > 800) {
-      this.rtfChecked = true
-      // Slower than real time would make speech stutter on this machine: use the system voice.
-      if (data.synthMs / audioMs > 0.9) set({ systemVoice: true })
-    }
   }
 
   private maybeFinish(): void {
@@ -546,7 +585,9 @@ class VoiceEngine {
   private armIdle(): void {
     this.clearIdle()
     this.idleTimer = window.setTimeout(() => {
-      if (useVoice.getState().state === 'listening') void this.stop()
+      // Mid-thought (buffered speech waiting for the send word): stay on and keep listening.
+      if (this.pendingUtterance) this.armIdle()
+      else if (useVoice.getState().state === 'listening') void this.stop()
     }, IDLE_STOP_MS)
   }
 

@@ -28,7 +28,7 @@ export class Vad {
       negativeSpeechThreshold: 0.35,
       minSpeechMs: 250,
       preSpeechPadMs: 250,
-      redemptionMs: 600,
+      redemptionMs: 800,
       getStream: () =>
         navigator.mediaDevices.getUserMedia({
           audio: { channelCount: 1, echoCancellation: true, noiseSuppression: true, autoGainControl: true }

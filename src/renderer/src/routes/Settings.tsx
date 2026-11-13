@@ -153,6 +153,9 @@ export function SettingsPage() {
             />
             <span className="text-xs tabular-nums text-slate-400">{settings.ttsSpeed.toFixed(2)}×</span>
           </Row>
+          <Row label="Send word" hint='Arjun listens through your pauses and only answers once you end with this word ("…what do you think, okiro?"). Clear it to send on every pause.'>
+            <Field k="endWord" width="w-40" placeholder="okiro" />
+          </Row>
           <Row label="Keep listening" hint="After Arjun answers, keep the mic open for your reply">
             <label className="flex items-center gap-2 text-xs text-slate-300">
               <input type="checkbox" checked={settings.autoListen} onChange={(e) => void updateSettings({ autoListen: e.target.checked })} className="accent-cyan-500" />
