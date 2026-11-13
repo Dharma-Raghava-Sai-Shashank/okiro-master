@@ -21,6 +21,8 @@ const IDLE_STOP_MS = 60_000
 const UNLOAD_MS = 5 * 60_000
 // Whisper's well-known outputs for silence and noise.
 const NOISE = /^(\[.*\]|\(.*\)|thank you\.?|thanks for watching[.!]?|you\.?|bye\.?|\.+)$/i
+// Pre-synthesized acknowledgements played the instant a question goes to the model (worker caches these).
+export const FILLERS = ['Mm-hm.', 'Hmm, let me think.', 'Okay, one sec.', 'Let me see.']
 const TOOL_CAPTION: Record<string, string> = {
   run_tests: 'Running your tests…',
   run_code: 'Trying some code…',
@@ -45,6 +47,7 @@ class VoiceEngine {
   private stt: Worker | null = null
   private tts: Worker | null = null
   private sttLoad: Promise<void> | null = null
+  private sttModel = ''
   private ttsReady = false
   private player: Player | null = null
   private vad = new Vad()
@@ -62,6 +65,21 @@ class VoiceEngine {
   private progress = new Map<string, { loaded: number; total: number }>()
   private recentArjunPhrases: { text: string; time: number }[] = []
   private lastSpokenAt = 0
+  private bargedIn = false
+  private fillerIds = new Set<number>()
+  private lastFiller = -1
+  // One voice turn's latency marks: speech end → transcript → first LLM token → first audio out.
+  private tm: { speechEnd: number; stt: number; firstToken: number; firstAudio: number } | null = null
+
+  private markFirstAudio(): void {
+    const m = this.tm
+    if (!m || m.firstAudio) return
+    m.firstAudio = performance.now()
+    const d = (a: number, b: number) => (a && b ? Math.round(b - a) : -1)
+    console.log(
+      `[voice-timing] stt=${d(m.speechEnd, m.stt)}ms llm=${d(m.stt, m.firstToken)}ms tts=${d(m.firstToken || m.stt, m.firstAudio)}ms total=${d(m.speechEnd, m.firstAudio)}ms`
+    )
+  }
 
   private isEchoWindow(): boolean {
     if (this.player?.speaking || this.pendingTts > 0 || useVoice.getState().state === 'speaking') return true
@@ -134,7 +152,10 @@ class VoiceEngine {
       await this.vad.start({
         onSpeechStart: () => this.onSpeechStart(),
         onSpeechEnd: (audio) => void this.onSpeechEnd(audio),
-        onMisfire: () => this.backToListening()
+        onMisfire: () => {
+          this.bargedIn = false
+          this.backToListening()
+        }
       })
       set({ state: 'listening', loadProgress: null })
       this.armIdle()
@@ -160,6 +181,7 @@ class VoiceEngine {
     this.player?.stop()
     this.pendingTts = 0
     this.ttsText.clear()
+    this.fillerIds.clear()
     if (this.turn) useCoach.getState().stop(this.turn.scope)
     this.turn = null
     this.vad.setArjunSpeaking(false)
@@ -203,7 +225,10 @@ class VoiceEngine {
   // ── models ──────────────────────────────────────────────────────────────
 
   private loadStt(model: string): Promise<void> {
-    if (this.sttLoad) return this.sttLoad
+    if (this.sttLoad && this.sttModel === model) return this.sttLoad
+    this.stt?.terminate()
+    this.sttLoad = null
+    this.sttModel = model
     this.stt = new SttWorker()
     this.sttLoad = new Promise<void>((resolve, reject) => {
       this.stt!.onmessage = ({ data }: MessageEvent) => {
@@ -248,11 +273,11 @@ class VoiceEngine {
       } else if (data.type === 'audio') this.onAudio(data)
       else if (data.type === 'error') {
         if (data.id !== undefined && this.ttsText.has(data.id)) {
-          // One sentence failed: say it with the system voice instead.
+          // One sentence failed: say it with the system voice instead (a failed filler is just dropped).
           const text = this.ttsText.get(data.id)!
           this.ttsText.delete(data.id)
           this.pendingTts = Math.max(0, this.pendingTts - 1)
-          this.player?.speakSystem(text, settings()?.ttsSpeed ?? 1)
+          if (!this.fillerIds.delete(data.id)) this.player?.speakSystem(text, settings()?.ttsSpeed ?? 1)
         } else {
           // The model itself failed to load: use the system voice for this session.
           set({ systemVoice: true })
@@ -288,22 +313,31 @@ class VoiceEngine {
 
   private onSpeechStart(): void {
     this.clearIdle()
-    if (this.isEchoWindow()) return
+    const st = useVoice.getState().state
+    if (st === 'speaking' || st === 'thinking') {
+      // Barge-in: while Arjun talks the VAD needs 0.85 + sustained speech, so this is the student.
+      this.bargedIn = true
+      this.interrupt()
+    }
     set({ state: 'listening', captionUser: '…' })
   }
 
   private async onSpeechEnd(audio: Float32Array): Promise<void> {
-    if (this.isEchoWindow()) {
+    const barged = this.bargedIn
+    this.bargedIn = false
+    if (!barged && this.isEchoWindow()) {
       this.backToListening()
       return
     }
     if (!this.stt) return
+    this.tm = { speechEnd: performance.now(), stt: 0, firstToken: 0, firstAudio: 0 }
     set({ state: 'transcribing' })
     const id = ++this.transcribeSeq
     const text = await new Promise<string>((resolve) => {
       this.transcribing.set(id, resolve)
       this.stt!.postMessage({ type: 'transcribe', id, audio }, [audio.buffer])
     })
+    if (this.tm) this.tm.stt = performance.now()
     if (!this.active) return
     if (!text || NOISE.test(text.trim()) || this.isEchoOfArjun(text)) {
       this.backToListening()
@@ -371,6 +405,7 @@ class VoiceEngine {
     this.tts?.postMessage({ type: 'begin', gen: this.gen })
     this.turn = { scope, turnId: null, chunker: new SentenceChunker(), done: false }
     set({ state: 'thinking', captionArjun: '' })
+    if (action !== 'greet') this.sayFiller()
     await useCoach.getState().send({
       scope,
       problem: ws?.ref,
@@ -403,6 +438,7 @@ class VoiceEngine {
     else if (e.turnId !== t.turnId) return
     switch (e.type) {
       case 'text':
+        if (this.tm && !this.tm.firstToken) this.tm.firstToken = performance.now()
         for (const s of t.chunker.push(e.delta)) this.say(s)
         break
       case 'tool-start':
@@ -431,6 +467,23 @@ class VoiceEngine {
 
   // ── speaking ────────────────────────────────────────────────────────────
 
+  /** An instant "I heard you" while the model works — dead air is what makes it feel slow. */
+  private sayFiller(): void {
+    if (!this.player || !this.ttsReady || !this.tts || useVoice.getState().systemVoice) return
+    let idx = Math.floor(Math.random() * FILLERS.length)
+    if (idx === this.lastFiller) idx = (idx + 1) % FILLERS.length
+    this.lastFiller = idx
+    const text = FILLERS[idx]
+    this.lastSpokenAt = Date.now()
+    this.recentArjunPhrases.push({ text, time: Date.now() })
+    this.vad.setArjunSpeaking(true)
+    const id = ++this.speakSeq
+    this.pendingTts++
+    this.ttsText.set(id, text)
+    this.fillerIds.add(id)
+    this.tts.postMessage({ type: 'filler', gen: this.gen, id, idx, voice: settings()?.ttsVoice ?? 'af_heart' })
+  }
+
   private say(text: string): void {
     if (!text.trim() || !this.player) return
     this.clearIdle()
@@ -443,13 +496,14 @@ class VoiceEngine {
     if (useVoice.getState().systemVoice || !this.ttsReady || !this.tts) {
       set({ state: 'speaking', captionArjun: text })
       this.player.speakSystem(text, speed)
+      this.markFirstAudio()
       return
     }
     set({ state: 'speaking' })
     const id = ++this.speakSeq
     this.pendingTts++
     this.ttsText.set(id, text)
-    this.tts.postMessage({ type: 'speak', gen: this.gen, id, text, voice: s?.ttsVoice ?? 'am_michael', speed })
+    this.tts.postMessage({ type: 'speak', gen: this.gen, id, text, voice: s?.ttsVoice ?? 'af_heart', speed })
   }
 
   private onAudio(data: { gen: number; id: number; pcm: Float32Array; sr: number; synthMs: number }): void {
@@ -459,6 +513,8 @@ class VoiceEngine {
     this.ttsText.delete(data.id)
     set({ captionArjun: text })
     this.player?.play(data.pcm, data.sr)
+    if (this.fillerIds.delete(data.id)) return // a filler isn't the reply's first audio
+    this.markFirstAudio()
     const audioMs = (data.pcm.length / data.sr) * 1000
     if (!this.rtfChecked && audioMs > 800) {
       this.rtfChecked = true
@@ -471,6 +527,8 @@ class VoiceEngine {
     if (this.pendingTts > 0 || this.player?.speaking) return
     this.lastSpokenAt = Date.now()
     if (this.turn && !this.turn.done) {
+      // Silence while the model works: drop the barge-in bar so normal speech gets through.
+      this.vad.setArjunSpeaking(false)
       set({ state: 'thinking' })
       return
     }

@@ -64,20 +64,26 @@ export const DEFAULT_SETTINGS: Settings = {
   onboarded: false,
   lastSyncAt: 0,
   voiceEnabled: true,
-  sttModel: 'onnx-community/whisper-base.en',
-  ttsVoice: 'am_michael',
+  sttModel: 'onnx-community/moonshine-base-ONNX',
+  ttsVoice: 'af_heart',
   ttsSpeed: 1,
   voiceEffort: 'low',
   autoListen: true
 }
 
 export const TTS_VOICES: { id: string; label: string }[] = [
+  { id: 'af_heart', label: 'Heart (US) ★' },
+  { id: 'af_bella', label: 'Bella (US)' },
+  { id: 'af_nicole', label: 'Nicole (US, soft)' },
+  { id: 'bf_emma', label: 'Emma (UK)' },
   { id: 'am_michael', label: 'Michael (US)' },
-  { id: 'am_fenrir', label: 'Fenrir (US)' },
-  { id: 'am_puck', label: 'Puck (US)' },
-  { id: 'bm_george', label: 'George (UK)' },
-  { id: 'bm_fable', label: 'Fable (UK)' },
   { id: 'system', label: 'macOS system voice' }
+]
+
+export const STT_MODELS: { id: string; label: string }[] = [
+  { id: 'onnx-community/moonshine-base-ONNX', label: 'Moonshine (fast)' },
+  { id: 'onnx-community/whisper-base.en', label: 'Whisper base' },
+  { id: 'onnx-community/whisper-small.en', label: 'Whisper small (accurate, slower)' }
 ]
 
 export const SPOILER_LEVELS = ['Nudge', 'Hint', 'Approach', 'Pseudocode', 'Full solution'] as const

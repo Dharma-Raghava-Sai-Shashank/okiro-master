@@ -38,8 +38,16 @@ export async function startOllama(): Promise<boolean> {
   if (!bin) return false
   const host = new URL(getSettings().ollamaHost)
   child = spawn(bin, ['serve'], {
-    // One model in memory at a time keeps 8 GB machines responsive.
-    env: { ...process.env, OLLAMA_HOST: `127.0.0.1:${host.port || '11434'}`, OLLAMA_MAX_LOADED_MODELS: '1' },
+    // Two models: the chat model stays hot while nomic-embed (274 MB) handles KB searches —
+    // with one slot the embed call evicts the chat model and every reply pays a full reload.
+    // Flash attention + q8 KV cache cut the KV footprint 60-75% so both fit in 8 GB.
+    env: {
+      ...process.env,
+      OLLAMA_HOST: `127.0.0.1:${host.port || '11434'}`,
+      OLLAMA_MAX_LOADED_MODELS: '2',
+      OLLAMA_FLASH_ATTENTION: '1',
+      OLLAMA_KV_CACHE_TYPE: 'q8_0'
+    },
     stdio: 'ignore',
     detached: false
   })
@@ -77,8 +85,8 @@ export async function embed(texts: string[]): Promise<number[][]> {
   const s = getSettings()
   const res = await fetch(`${s.ollamaHost}/api/embed`, {
     method: 'POST',
-    // Unload soon after searching so the chat model keeps the memory.
-    body: JSON.stringify({ model: s.embedModel, input: texts, keep_alive: '30s' }),
+    // Stays resident in the second model slot so repeated searches don't reload it.
+    body: JSON.stringify({ model: s.embedModel, input: texts, keep_alive: '5m' }),
     signal: AbortSignal.timeout(120_000)
   })
   if (!res.ok) throw new Error(`Embedding failed: ${(await res.text()).slice(0, 200)}`)

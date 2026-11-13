@@ -11,7 +11,6 @@ export interface VadHandlers {
 export class Vad {
   private vad: MicVAD | null = null
   private mic = 0
-  private arjunSpeaking = false
   private cooldownTimer: number | null = null
 
   async start(h: VadHandlers): Promise<void> {
@@ -21,61 +20,53 @@ export class Vad {
     }
     const base = new URL('./vad/', document.baseURI).href
     this.vad = await MicVAD.new({
-      model: 'v5',
+      model: 'v6',
       baseAssetPath: base,
       onnxWASMBasePath: base,
       startOnLoad: false,
       positiveSpeechThreshold: 0.5,
       negativeSpeechThreshold: 0.35,
       minSpeechMs: 250,
-      preSpeechPadMs: 300,
-      redemptionMs: 700,
+      preSpeechPadMs: 250,
+      redemptionMs: 600,
       getStream: () =>
         navigator.mediaDevices.getUserMedia({
           audio: { channelCount: 1, echoCancellation: true, noiseSuppression: true, autoGainControl: true }
         }),
-      onSpeechRealStart: () => {
-        if (this.arjunSpeaking) return
-        h.onSpeechStart()
-      },
-      onSpeechEnd: (audio) => {
-        if (this.arjunSpeaking) return
-        h.onSpeechEnd(audio)
-      },
-      onVADMisfire: () => {
-        if (this.arjunSpeaking) return
-        h.onMisfire()
-      },
+      onSpeechRealStart: () => h.onSpeechStart(),
+      onSpeechEnd: (audio) => h.onSpeechEnd(audio),
+      onVADMisfire: () => h.onMisfire(),
       onFrameProcessed: (_p, frame) => {
         let sum = 0
         for (let i = 0; i < frame.length; i++) sum += frame[i] * frame[i]
-        this.mic = this.arjunSpeaking ? 0 : Math.min(1, Math.sqrt(sum / frame.length) * 8)
+        this.mic = Math.min(1, Math.sqrt(sum / frame.length) * 8)
       }
     })
     await this.vad.start()
   }
 
-  /** While Arjun talks, block microphone speech events and ignore speaker echo. */
+  /**
+   * While Arjun talks, require strong sustained speech so his own voice (already reduced by the
+   * OS echo canceller) can't trigger — but a real student talking over him still barges in.
+   */
   setArjunSpeaking(speaking: boolean): void {
     if (this.cooldownTimer !== null) {
       window.clearTimeout(this.cooldownTimer)
       this.cooldownTimer = null
     }
     if (speaking) {
-      this.arjunSpeaking = true
       this.vad?.setOptions({ positiveSpeechThreshold: 0.85 })
     } else {
-      // Keep arjunSpeaking = true for 500ms after audio playback ends to absorb room reverberation
+      // Hold the high bar briefly after playback ends to absorb room reverberation.
       this.cooldownTimer = window.setTimeout(() => {
-        this.arjunSpeaking = false
         this.vad?.setOptions({ positiveSpeechThreshold: 0.5 })
         this.cooldownTimer = null
-      }, 500)
+      }, 400)
     }
   }
 
   micLevel(): number {
-    return this.arjunSpeaking ? 0 : this.mic
+    return this.mic
   }
 
   async stop(): Promise<void> {
@@ -83,7 +74,6 @@ export class Vad {
       window.clearTimeout(this.cooldownTimer)
       this.cooldownTimer = null
     }
-    this.arjunSpeaking = false
     this.mic = 0
     await this.vad?.destroy()
     this.vad = null

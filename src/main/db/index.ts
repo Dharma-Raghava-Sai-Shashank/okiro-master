@@ -29,6 +29,15 @@ function migrate(d: DatabaseSync): void {
   }[]
   const del = d.prepare('DELETE FROM chat_messages WHERE id = ?')
   for (const r of rows) if (looksLikeToolCallJson(r.content)) del.run(r.id)
+  // Voice v3: move old defaults to the new ones (never-thinking instruct model, female voice, faster STT).
+  const remap: [string, string, string][] = [
+    ['ollamaModel', '"qwen3:4b"', '"qwen3:4b-instruct"'],
+    ['ollamaModel', '"qwen2.5-coder:3b"', '"qwen3:4b-instruct"'],
+    ['ttsVoice', '"am_michael"', '"af_heart"'],
+    ['sttModel', '"onnx-community/whisper-base.en"', '"onnx-community/moonshine-base-ONNX"']
+  ]
+  const up = d.prepare('UPDATE settings SET value = ? WHERE key = ? AND value = ?')
+  for (const [key, from, to] of remap) up.run(to, key, from)
 }
 
 export function getDb(): DatabaseSync {

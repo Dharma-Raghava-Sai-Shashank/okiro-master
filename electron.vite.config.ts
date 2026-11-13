@@ -44,7 +44,7 @@ const voiceAssets = {
     copy(ort, ['ort-wasm-simd-threaded.jsep.mjs', 'ort-wasm-simd-threaded.jsep.wasm'], `${pub}/ort`)
     // vad-web uses the plain build.
     copy(ort, ['ort-wasm-simd-threaded.mjs', 'ort-wasm-simd-threaded.wasm'], `${pub}/vad`)
-    copy(vad, ['vad.worklet.bundle.min.js', 'silero_vad_v5.onnx'], `${pub}/vad`)
+    copy(vad, ['vad.worklet.bundle.min.js', 'silero_vad_v5.onnx', 'silero_vad_v6.onnx'], `${pub}/vad`)
   }
 }
 

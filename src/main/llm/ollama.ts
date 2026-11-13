@@ -50,7 +50,11 @@ export interface OllamaOptions {
   /** Ollama's `think` value: an effort string for gpt-oss, true/false for other thinking models, omitted otherwise. */
   think?: string | boolean
   numCtx?: number
-  keepAlive?: string
+  /** Duration string, or -1 to keep the model loaded indefinitely. */
+  keepAlive?: string | number
+  /** Hard cap on reply tokens (voice turns). */
+  numPredict?: number
+  temperature?: number
 }
 
 export class OllamaProvider implements LlmProvider {
@@ -70,7 +74,11 @@ export class OllamaProvider implements LlmProvider {
       messages: toOllama(req.system, req.messages),
       stream: true,
       keep_alive: this.opts.keepAlive ?? '5m',
-      options: { num_ctx: this.opts.numCtx ?? 16384 }
+      options: {
+        num_ctx: this.opts.numCtx ?? 16384,
+        ...(this.opts.numPredict ? { num_predict: this.opts.numPredict } : {}),
+        ...(this.opts.temperature !== undefined ? { temperature: this.opts.temperature } : {})
+      }
     }
     if (req.tools.length) {
       body.tools = req.tools.map((t) => ({ type: 'function', function: { name: t.name, description: t.description, parameters: t.parameters } }))

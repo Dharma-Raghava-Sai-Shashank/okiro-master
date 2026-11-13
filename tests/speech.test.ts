@@ -21,6 +21,10 @@ describe('SentenceChunker', () => {
     expect(c.push(' you?')).toEqual([])
     expect(c.flush()).toEqual(['How are you?'])
   })
+  it('flushes short sentences immediately', () => {
+    const c = new SentenceChunker()
+    expect(c.push('Sure. Let me look at')).toEqual(['Sure.'])
+  })
   it('does not split decimals', () => {
     const c = new SentenceChunker()
     expect(c.push('It takes 1.5 seconds. Next')).toEqual(['It takes 1.5 seconds.'])

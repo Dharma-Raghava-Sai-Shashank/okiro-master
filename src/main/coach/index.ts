@@ -69,13 +69,19 @@ async function setup(req: CoachRequest): Promise<TurnSetup> {
   const caps = info?.capabilities ?? []
   const compact = !info || (info.billions > 0 && info.billions <= 8)
   let think: string | boolean | undefined
-  if (caps.includes('thinking')) think = s.ollamaModel.startsWith('gpt-oss') ? effort : effort !== 'low'
+  if (caps.includes('thinking')) {
+    // Voice never thinks: reasoning tokens are pure dead air before the first spoken word.
+    if (req.voice) think = s.ollamaModel.startsWith('gpt-oss') ? 'low' : false
+    else think = s.ollamaModel.startsWith('gpt-oss') ? effort : effort !== 'low'
+  }
   const llm = new OllamaProvider(s.ollamaHost, s.ollamaModel, {
     think,
     numCtx: compact ? 8192 : s.ollamaModel.startsWith('gpt-oss') ? 24576 : 16384,
-    keepAlive: '5m'
+    keepAlive: -1,
+    numPredict: req.voice ? (deep ? 384 : 192) : undefined,
+    temperature: 0.7
   })
-  return { llm, label: llm.label, tools: caps.includes('tools'), compact, historyLimit: compact ? 8 : 14 }
+  return { llm, label: llm.label, tools: caps.includes('tools'), compact, historyLimit: req.voice ? 6 : compact ? 8 : 14 }
 }
 
 interface MsgRow {

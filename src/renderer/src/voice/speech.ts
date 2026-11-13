@@ -71,9 +71,9 @@ export class SentenceChunker {
         if (spoken) out.push(spoken)
         continue
       }
-      if (openFence < 0 && scan.length > 220) {
+      if (openFence < 0 && scan.length > 150) {
         // Long run-on text: break at the last comma or space so speech can start.
-        const cut = Math.max(scan.lastIndexOf(', ', 200), scan.lastIndexOf(' ', 200))
+        const cut = Math.max(scan.lastIndexOf(', ', 140), scan.lastIndexOf(' ', 140))
         if (cut > 40) {
           const spoken = toSpeakable(this.buf.slice(0, cut + 1))
           this.buf = this.buf.slice(cut + 1)
@@ -115,8 +115,7 @@ function findBoundary(s: string): number {
       if (!/\s/.test(next)) continue
       if (c === '.' && /\d$/.test(s.slice(0, i)) && /^\s*\d/.test(s.slice(i + 1))) continue
       if (c === '.' && ABBREV.test(s.slice(0, i + 1))) continue
-      const sentence = s.slice(0, i + 1).trim()
-      if (sentence.split(/\s+/).length < 3 && i < s.length - 1 && !/[!?]/.test(c)) continue
+      // Short sentences flush too — "Sure." should be spoken the moment it lands.
       return i + 1
     }
   }

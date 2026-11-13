@@ -1,6 +1,6 @@
 import { useEffect, useState, type ReactNode } from 'react'
 import { KeyRound, LogIn, Volume2, Wrench, Brain, AlertTriangle, Download } from 'lucide-react'
-import { CONTEST_TYPE_LABELS, SPOILER_LEVELS, TTS_VOICES, type ContestType, type Settings } from '@shared/types'
+import { CONTEST_TYPE_LABELS, SPOILER_LEVELS, STT_MODELS, TTS_VOICES, type ContestType, type Settings } from '@shared/types'
 import { api } from '../lib/api'
 import { useApp } from '../lib/store'
 import { cx } from '../lib/format'
@@ -134,11 +134,18 @@ export function SettingsPage() {
               <Volume2 className="size-3.5" /> Preview
             </Button>
           </Row>
+          <Row label="Hearing" hint="How Arjun understands you (one-time download when switched)">
+            {STT_MODELS.map((m) => (
+              <Chip key={m.id} active={settings.sttModel === m.id} onClick={() => void updateSettings({ sttModel: m.id })}>
+                {m.label}
+              </Chip>
+            ))}
+          </Row>
           <Row label="Speaking speed">
             <input
               type="range"
               min={0.8}
-              max={1.3}
+              max={1.5}
               step={0.05}
               value={settings.ttsSpeed}
               onChange={(e) => void updateSettings({ ttsSpeed: Number(e.target.value) })}
@@ -152,7 +159,7 @@ export function SettingsPage() {
               Hands-free conversation
             </label>
           </Row>
-          <Row label="Thinking in voice chat" hint="Low starts talking fastest. Explain / hint / review always think more.">
+          <Row label="Thinking in voice chat" hint="Applies when Claude answers. The local model always replies instantly in voice.">
             {(['low', 'medium', 'high'] as const).map((e) => (
               <Chip key={e} active={settings.voiceEffort === e} onClick={() => void updateSettings({ voiceEffort: e })}>
                 {e}
@@ -314,7 +321,7 @@ function ModelAdvice() {
       {llm.chatModelInfo && !caps.includes('tools') && (
         <div className="flex items-start gap-2 rounded-xl border border-amber-400/20 bg-amber-500/[0.07] px-3 py-2 text-[12px] text-amber-100/90">
           <AlertTriangle className="mt-0.5 size-3.5 shrink-0" />
-          This model can't call tools, so Arjun can't run your tests, stress-test or open pages himself — he'll reason from what's on screen. Small coder models are also weak at coaching.
+          This model can't call tools, so Arjun can't run your tests, stress-test or open pages — just reason from what's on screen. Small coder models are also weak at coaching.
         </div>
       )}
       {settings.ollamaModel !== rec && (

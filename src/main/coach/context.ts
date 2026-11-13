@@ -34,10 +34,14 @@ export interface ContextOptions {
 }
 
 const VOICE_RULES = `# You are speaking out loud
-The student is talking to you by voice and hears your reply through a speaker. So:
-- Speak naturally in short sentences. Usually 2–4 sentences, then stop and let them talk.
-- No markdown, no bullet lists, no headings, no emojis. Never read code aloud; if code helps, say "I've put it on screen" and put it in a code block after your spoken part.
-- Say numbers and math the way a person would: "n up to two hundred thousand", "n log n".`
+The student hears your reply through a speaker. Rules, most important first:
+- BE SHORT. 1–3 short sentences, then stop and let them talk. One idea per turn.
+- Sound like a friend talking, not an essay. No markdown, no lists, no headings, no emojis.
+- Never read code aloud. Say "it's on screen" and put it in a code block after your spoken part.
+- Say numbers and math like a person would: "n up to two hundred thousand", "n log n".
+Right length, for example:
+Student: "what should i do today" → You: "You're two problems from finishing that round. Let's knock out C, it's a sixteen hundred. Ready?"
+Student: "im stuck" → You: "Tell me your current idea in one line. What have you tried?"`
 
 const SPOILER_RULES = [
   'Nudge: only ask guiding questions and point at what to look at. No techniques, no approach.',
@@ -88,9 +92,14 @@ export interface TurnContext {
 }
 
 export async function buildContext(req: CoachRequest, s: Settings, opts: ContextOptions): Promise<TurnContext> {
-  const lim = opts.compact
-    ? { statement: 5000, code: 6000, run: 1800, kb: 2, kbChars: 1200, editorial: 3000, notes: 4 }
-    : { statement: 9000, code: 9000, run: 3500, kb: 4, kbChars: 2200, editorial: 6000, notes: 8 }
+  // Voice turns get the tightest budgets regardless of model size — they must start fast.
+  const lim = req.voice
+    ? { statement: 3000, code: 5000, run: 1500, kb: 2, kbChars: 800, editorial: 2500, notes: 4 }
+    : opts.compact
+      ? { statement: 5000, code: 6000, run: 1800, kb: 2, kbChars: 1200, editorial: 3000, notes: 4 }
+      : { statement: 9000, code: 9000, run: 3500, kb: 4, kbChars: 2200, editorial: 6000, notes: 8 }
+
+  // Static prefix first, byte-identical across turns, so Ollama's prefix cache skips its prefill.
   const parts: string[] = [personaText(s, opts.compact)]
   if (req.voice) {
     parts.push(
@@ -99,21 +108,38 @@ export async function buildContext(req: CoachRequest, s: Settings, opts: Context
         : VOICE_RULES
     )
   }
-  parts.push(`# Progress (facts from the database — quote exactly)\n${await progressBlock(s)}`)
+  if (!opts.tools) {
+    parts.push(
+      '# Tools\nYou cannot run code or call functions in this chat. Reason from the test results and code in the context. Answer in plain words — never output JSON or a function call.'
+    )
+  }
+  const level = Math.max(0, Math.min(4, s.spoilerLevel))
+  parts.push(`# Spoiler level: ${level} — ${SPOILER_LEVELS[level]}\n${SPOILER_RULES[level]}\nIf the student explicitly asks for more ("just tell me", "show the solution"), you may go one level further and say that you're doing so.`)
+
+  // Dynamic blocks below; the slow fetches run in parallel.
+  let problemErr = ''
+  const [progress, problem] = await Promise.all([
+    progressBlock(s),
+    req.problem
+      ? getProblem(req.problem, false).catch((e: unknown) => {
+          problemErr = e instanceof Error ? e.message : String(e)
+          return undefined
+        })
+      : Promise.resolve(undefined)
+  ])
+  parts.push(`# Progress (facts from the database — quote exactly)\n${progress}`)
 
   const notes = recentNotes(lim.notes)
   if (notes.length) parts.push(`# What you remember about the student\n${notes.map((n) => `- ${n.note}`).join('\n')}`)
 
-  let problem: ProblemDetail | undefined
   if (req.problem) {
-    try {
-      problem = await getProblem(req.problem, false)
+    if (problem) {
       parts.push(`# Current problem\n${problemBlock(problem, true, lim.statement)}`)
       const facts = analyzeConstraints(problem.statementText)
       if (facts.budget) parts.push(`# Complexity budget (computed by the app from the constraints)\n${facts.budget}`)
-    } catch (e) {
+    } else {
       parts.push(
-        `# Current problem\n${req.problem.contestId}${req.problem.index} — the statement could not be loaded (${e instanceof Error ? e.message : String(e)}). Tell the student and work from what they describe.`
+        `# Current problem\n${req.problem.contestId}${req.problem.index} — the statement could not be loaded (${problemErr}). Tell the student and work from what they describe.`
       )
     }
 
@@ -148,15 +174,6 @@ export async function buildContext(req: CoachRequest, s: Settings, opts: Context
     const kb = await searchKb(req.text, Math.min(3, lim.kb), [])
     if (kb.length) parts.push(`# Reference notes (your knowledge base)\n${kb.map((k) => clip(k.text, lim.kbChars)).join('\n\n---\n\n')}`)
   }
-
-  if (!opts.tools) {
-    parts.push(
-      '# Tools\nYou cannot run code or call functions in this chat. Reason from the test results and code above. Answer in plain words — never output JSON or a function call.'
-    )
-  }
-
-  const level = Math.max(0, Math.min(4, s.spoilerLevel))
-  parts.push(`# Spoiler level: ${level} — ${SPOILER_LEVELS[level]}\n${SPOILER_RULES[level]}\nIf the student explicitly asks for more ("just tell me", "show the solution"), you may go one level further and say that you're doing so.`)
 
   return { system: parts.join('\n\n'), problem }
 }

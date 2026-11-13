@@ -101,7 +101,8 @@ if (typeof speechSynthesis !== 'undefined') {
 }
 
 function pickSystemVoice(): SpeechSynthesisVoice | null {
-  const prefer = ['Rishi', 'Daniel', 'Alex', 'Aaron', 'Fred']
+  // Female voices, matching Arjun's Kokoro default (af_heart).
+  const prefer = ['Samantha', 'Ava', 'Kate', 'Karen', 'Moira', 'Tessa']
   for (const name of prefer) {
     const v = systemVoices.find((x) => x.name.startsWith(name))
     if (v) return v

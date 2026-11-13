@@ -1,4 +1,5 @@
-// Speech-to-text: Whisper (English) running on-device via transformers.js, WebGPU first, WASM fallback.
+// Speech-to-text: Moonshine or Whisper (English) on-device via transformers.js, WebGPU first, WASM fallback.
+// Moonshine is the default: built for short utterances (no 30 s padding), faster and slightly more accurate.
 import { env, pipeline } from '@huggingface/transformers'
 import { hasWebGpu, type WorkerScope } from './worker-types'
 
@@ -27,7 +28,7 @@ ctx.onmessage = async ({ data }: MessageEvent) => {
       ctx.postMessage({ type: 'ready', device: webgpu ? 'webgpu' : 'wasm' })
     } else if (data.type === 'transcribe') {
       if (!asr) throw new Error('Speech recognition is not loaded')
-      // English-only (.en) Whisper models must not get language/task options.
+      // English-only models (moonshine, whisper .en) must not get language/task options.
       const out = await asr(data.audio as Float32Array, { max_new_tokens: 128 })
       const text = (Array.isArray(out) ? out[0] : out).text.trim()
       ctx.postMessage({ type: 'result', id: data.id, text })
