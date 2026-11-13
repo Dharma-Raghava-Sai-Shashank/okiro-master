@@ -133,7 +133,7 @@ export function ContestsPage() {
   }
 
   return (
-    <div className="flex h-full flex-col gap-3 px-6 pb-20">
+    <div className="flex h-full flex-col gap-4 px-6 pb-20">
       <Glass className="flex flex-col gap-3 px-4 py-3">
         <div className="flex flex-wrap items-center gap-2">
           {TYPES.map((t) => (

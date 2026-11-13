@@ -6,6 +6,36 @@ export function Glass({ className, children, strong }: { className?: string; chi
   return <div className={cx(strong ? 'glass-strong' : 'glass', 'rounded-3xl', className)}>{children}</div>
 }
 
+/** The standard page card: Glass + padding + a Label header row. */
+export function Card({
+  title,
+  icon,
+  right,
+  className,
+  children
+}: {
+  title?: string
+  icon?: ReactNode
+  right?: ReactNode
+  className?: string
+  children: ReactNode
+}) {
+  return (
+    <Glass className={cx('p-5', className)}>
+      {(title || right) && (
+        <div className="mb-3 flex items-center justify-between gap-2">
+          <div className="flex items-center gap-1.5">
+            {icon}
+            {title && <Label>{title}</Label>}
+          </div>
+          {right}
+        </div>
+      )}
+      {children}
+    </Glass>
+  )
+}
+
 type Variant = 'primary' | 'ghost' | 'soft' | 'danger' | 'success'
 
 export function Button({

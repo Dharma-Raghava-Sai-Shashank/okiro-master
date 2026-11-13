@@ -1,30 +1,14 @@
-import { useEffect, useMemo, useState } from 'react'
-import { useNavigate } from 'react-router'
-import { Brain, CalendarClock, Crown, Target, TrendingUp, Trophy, Volume2 } from 'lucide-react'
-import type { Insights, MemoryNote, StatsSummary } from '@shared/types'
+import { useEffect, useState } from 'react'
+import { Brain, Target, TrendingUp, Volume2 } from 'lucide-react'
+import type { Insights, StatsSummary } from '@shared/types'
 import { api } from '../lib/api'
 import { useApp } from '../lib/store'
-import { cx, rankName, ratingColor, timeAgo } from '../lib/format'
-import { Bar, Flame, Glass, Label, ProgressRing, RatingPill, Spinner } from '../components/ui'
-import { AreaChart, Bars, C, DivergingTags, Donut, Heatmap, RatingChart } from '../components/charts'
+import { cx, rankName, ratingColor } from '../lib/format'
+import { Card, Flame, Glass, Label, ProgressRing, Spinner } from '../components/ui'
+import { C, DivergingTags, Donut, Heatmap, RatingChart } from '../components/charts'
 import { voice } from '../voice/engine'
 
-const WEEKDAYS = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun']
 const fmtMonth = (ms: number) => new Date(ms).toLocaleDateString(undefined, { month: 'short', year: 'numeric' })
-
-function Card({ title, icon, children, className, right }: { title: string; icon?: React.ReactNode; children: React.ReactNode; className?: string; right?: React.ReactNode }) {
-  return (
-    <Glass className={cx('p-5', className)}>
-      <div className="mb-4 flex items-center gap-2">
-        {icon}
-        <Label>{title}</Label>
-        <div className="flex-1" />
-        {right}
-      </div>
-      {children}
-    </Glass>
-  )
-}
 
 /** Semi-circle gauge from 1200 to 2400 with a 2100 marker. */
 function RatingGauge({ rating, max }: { rating: number | null; max: number | null }) {
@@ -65,26 +49,13 @@ function RatingGauge({ rating, max }: { rating: number | null; max: number | nul
 
 export function StatsPage() {
   const { dataVersion, settings } = useApp()
-  const nav = useNavigate()
   const [ins, setIns] = useState<Insights | null>(null)
   const [sum, setSum] = useState<StatsSummary | null>(null)
-  const [notes, setNotes] = useState<MemoryNote[]>([])
 
   useEffect(() => {
     void api.stats.insights().then(setIns)
     void api.stats.summary().then(setSum)
-    void api.coach.memory().then(setNotes)
   }, [dataVersion])
-
-  const paceSeries = useMemo(
-    () =>
-      (ins?.pace.weekly ?? []).map((w) => ({
-        label: new Date(`${w.weekStart}T00:00:00`).toLocaleDateString(undefined, { day: 'numeric', month: 'short' }),
-        value: w.cumulative,
-        extra: `week of ${new Date(`${w.weekStart}T00:00:00`).toLocaleDateString(undefined, { day: 'numeric', month: 'short' })} · +${w.completed}`
-      })),
-    [ins]
-  )
 
   if (!ins || !sum) {
     return (
@@ -96,11 +67,7 @@ export function StatsPage() {
 
   const rm = sum.roadmap
   const today = ins.heatmap[ins.heatmap.length - 1]
-  const tagRows = [
-    ...ins.focusTags.map((t) => ({ ...t, focus: true })),
-    ...ins.strongTags.map((t) => ({ ...t, focus: false }))
-  ]
-  const fastest = ins.byHour.indexOf(Math.max(...ins.byHour))
+  const tagRows = [...ins.focusTags.map((t) => ({ ...t, focus: true })), ...ins.strongTags.map((t) => ({ ...t, focus: false }))]
 
   return (
     <div className="h-full overflow-y-auto px-6 pb-24">
@@ -166,6 +133,24 @@ export function StatsPage() {
         </Glass>
       </div>
 
+      <Card title="Rating history" icon={<TrendingUp className="size-3.5 text-blue-300" />} className="mt-4">
+        <RatingChart points={ins.rating.history} />
+      </Card>
+
+      <Card title="Last 12 months" className="mt-4">
+        <Heatmap days={ins.heatmap} goal={settings?.dailyProblemGoal ?? 4} />
+      </Card>
+
+      <div className="mt-4 grid grid-cols-[minmax(0,1fr)_minmax(0,1.4fr)] gap-4">
+        <Card title="Verdicts" right={<span className="text-[11px] text-slate-400">first-try AC {Math.round(ins.firstTryRate * 100)}%</span>}>
+          <Donut data={ins.verdicts} />
+        </Card>
+        <Card title="Tags: focus areas vs strengths" icon={<Brain className="size-3.5 text-violet-300" />}>
+          {tagRows.length ? <DivergingTags tags={tagRows} /> : <div className="py-6 text-center text-xs text-slate-500">Solve a few more problems to see patterns.</div>}
+          {ins.focusTags.length > 0 && <div className="mt-3 text-[11.5px] text-rose-200/80">⚑ = focus area (most failed attempts relative to solves)</div>}
+        </Card>
+      </div>
+
       {/* Arjun's read */}
       <Glass className="relative mt-4 overflow-hidden p-5">
         <div className="hud-grid pointer-events-none absolute inset-0 opacity-40" />
@@ -190,163 +175,6 @@ export function StatsPage() {
           </button>
         </div>
       </Glass>
-
-      <div className="mt-4 grid grid-cols-[minmax(0,1.55fr)_minmax(0,1fr)] gap-4">
-        <Card title="Rating history" icon={<TrendingUp className="size-3.5 text-blue-300" />}>
-          <RatingChart points={ins.rating.history} />
-        </Card>
-        <Card title="Roadmap pace (contests completed)" icon={<CalendarClock className="size-3.5 text-blue-300" />}>
-          <AreaChart series={paceSeries} />
-          <div className="mt-2 text-[11.5px] text-slate-400">
-            Last 4 weeks: <b className="text-slate-200">{ins.pace.perWeek4.toFixed(1)}</b> contests/week · {rm.contestsLeft} left
-          </div>
-        </Card>
-      </div>
-
-      <Card title="Last 12 months" className="mt-4">
-        <Heatmap days={ins.heatmap} goal={settings?.dailyProblemGoal ?? 4} />
-      </Card>
-
-      <div className="mt-4 grid grid-cols-3 gap-4">
-        <Card title="Verdicts" right={<span className="text-[11px] text-slate-400">first-try AC {Math.round(ins.firstTryRate * 100)}%</span>}>
-          <Donut data={ins.verdicts} />
-        </Card>
-        <Card title={`Target problems by rating (≤ ${settings?.ratingCap})`}>
-          <Bars
-            data={ins.bands.map((b) => ({
-              label: String(b.rating / 100),
-              value: b.solved,
-              track: b.total,
-              tip: (
-                <span>
-                  <b>{b.rating}</b> · {b.solved}/{b.total} solved · first-try {Math.round(b.firstTry * 100)}% · {b.avgAttempts.toFixed(1)} tries/solve
-                </span>
-              )
-            }))}
-          />
-          <div className="mt-2 text-[11px] text-slate-500">Bar = solved, track = available in your window. Rating ÷ 100.</div>
-        </Card>
-        <Card title="By level">
-          <div className="flex flex-col gap-2.5">
-            {sum.byLevel.map((l) => (
-              <div key={l.level} className="flex items-center gap-3">
-                <div className="grid size-7 place-items-center rounded-lg bg-white/[0.06] text-[12px] font-black text-slate-200">{l.level}</div>
-                <div className="flex-1">
-                  <Bar value={l.solved} max={l.total} color={C.blue} />
-                </div>
-                <div className="w-20 text-right text-[11px] tabular-nums text-slate-400">
-                  {l.solved}/{l.total}
-                </div>
-              </div>
-            ))}
-          </div>
-        </Card>
-      </div>
-
-      <div className="mt-4 grid grid-cols-[minmax(0,1.3fr)_minmax(0,1fr)] gap-4">
-        <Card title="Tags: focus areas vs strengths" icon={<Brain className="size-3.5 text-violet-300" />}>
-          {tagRows.length ? <DivergingTags tags={tagRows} /> : <div className="py-6 text-center text-xs text-slate-500">Solve a few more problems to see patterns.</div>}
-          {ins.focusTags.length > 0 && <div className="mt-3 text-[11.5px] text-rose-200/80">⚑ = focus area (most failed attempts relative to solves)</div>}
-        </Card>
-        <Card title="Median solve time by rating (minutes)">
-          {ins.solveTime.length ? (
-            <Bars
-              showValues
-              data={ins.solveTime.map((s) => ({
-                label: String(s.rating / 100),
-                value: s.medianMin,
-                tip: (
-                  <span>
-                    <b>{s.rating}</b> · median {s.medianMin} min · {s.samples} problem{s.samples > 1 ? 's' : ''}
-                  </span>
-                )
-              }))}
-            />
-          ) : (
-            <div className="py-6 text-center text-xs text-slate-500">Solve problems inside Okiro to measure your time.</div>
-          )}
-        </Card>
-      </div>
-
-      <div className="mt-4 grid grid-cols-3 gap-4">
-        <Card title="When you solve (hour)" right={ins.byHour.some(Boolean) ? <span className="text-[11px] text-slate-400">peak {fastest}:00</span> : undefined}>
-          <Bars
-            height={110}
-            data={ins.byHour.map((v, h) => ({ label: h % 6 === 0 ? `${h}h` : '', value: v, tip: <span>{h}:00–{h + 1}:00 · {v} ACs</span> }))}
-          />
-        </Card>
-        <Card title="By weekday">
-          <Bars height={110} data={ins.byWeekday.map((v, i) => ({ label: WEEKDAYS[i], value: v, tip: <span>{WEEKDAYS[i]} · {v} ACs</span> }))} />
-        </Card>
-        <Card title="Personal bests" icon={<Crown className="size-3.5 text-amber-300" />}>
-          <div className="flex flex-col gap-3 text-[12.5px]">
-            <div className="flex justify-between">
-              <span className="text-slate-400">Most in a day</span>
-              <span className="font-bold text-slate-100">
-                {ins.bests.mostInDay}
-                {ins.bests.mostInDayDate && <span className="ml-1 font-normal text-slate-500">({new Date(`${ins.bests.mostInDayDate}T00:00:00`).toLocaleDateString()})</span>}
-              </span>
-            </div>
-            <div className="flex justify-between">
-              <span className="text-slate-400">Longest streak</span>
-              <span className="font-bold text-slate-100">{ins.bests.longestStreak} days</span>
-            </div>
-            {ins.bests.hardest && (
-              <button
-                className="flex items-center justify-between gap-2 text-left hover:underline"
-                onClick={() => nav(`/problem/${ins.bests.hardest!.contestId}/${ins.bests.hardest!.index}`)}
-              >
-                <span className="text-slate-400">Hardest solved</span>
-                <span className="flex min-w-0 items-center gap-1.5">
-                  <span className="truncate text-slate-200">{ins.bests.hardest.name}</span>
-                  <RatingPill rating={ins.bests.hardest.rating} />
-                </span>
-              </button>
-            )}
-            <div className="flex justify-between">
-              <span className="text-slate-400">Total solved</span>
-              <span className="font-bold text-slate-100">{sum.totalSolved}</span>
-            </div>
-          </div>
-        </Card>
-      </div>
-
-      <div className="mt-4 grid grid-cols-2 gap-4">
-        <Card title="Recent ACs" icon={<Trophy className="size-3.5 text-emerald-300" />}>
-          <div className="flex flex-col gap-1">
-            {ins.recentAcs.length === 0 && <div className="text-xs text-slate-500">No accepted solutions yet.</div>}
-            {ins.recentAcs.map((a) => (
-              <button
-                key={`${a.contestId}${a.index}`}
-                onClick={() => nav(`/problem/${a.contestId}/${a.index}`)}
-                className="flex items-center gap-2.5 rounded-lg px-2 py-1.5 text-left hover:bg-white/[0.04]"
-              >
-                <span className="size-1.5 rounded-full bg-emerald-400" />
-                <span className="w-14 font-mono text-[11.5px] text-slate-400">
-                  {a.contestId}
-                  {a.index}
-                </span>
-                <span className="min-w-0 flex-1 truncate text-[12.5px] text-slate-200">{a.name}</span>
-                <RatingPill rating={a.rating} />
-                <span className="w-14 text-right text-[10.5px] text-slate-500">{timeAgo(a.at)}</span>
-              </button>
-            ))}
-          </div>
-        </Card>
-        <Card title="What Arjun remembers">
-          <div className="flex max-h-72 flex-col gap-2 overflow-y-auto">
-            {notes.length === 0 && <div className="text-xs text-slate-500">Arjun writes a note each time you get AC.</div>}
-            {notes.map((n) => (
-              <div key={n.id} className="rounded-xl border border-white/[0.06] bg-white/[0.03] px-3 py-2">
-                <div className="text-[12px] leading-snug text-slate-200">{n.note}</div>
-                <div className="mt-0.5 text-[10px] text-slate-500">
-                  {n.kind} · {timeAgo(n.createdAt)}
-                </div>
-              </div>
-            ))}
-          </div>
-        </Card>
-      </div>
     </div>
   )
 }
