@@ -39,6 +39,15 @@ const TOOL_CAPTION: Record<string, string> = {
 const set = (patch: Parameters<ReturnType<typeof useVoice.getState>['set']>[0]) => useVoice.getState().set(patch)
 const settings = (): Settings | null => useApp.getState().settings
 const escapeRe = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+const joinAudio = (parts: Float32Array[]): Float32Array => {
+  const out = new Float32Array(parts.reduce((n, a) => n + a.length, 0))
+  let off = 0
+  for (const a of parts) {
+    out.set(a, off)
+    off += a.length
+  }
+  return out
+}
 // "okiro" the way speech recognition may spell it: "Okiro", "O'Kiro", "o kiro"…
 const fuzzyWord = (w: string) =>
   w
@@ -80,8 +89,11 @@ class VoiceEngine {
   private fillerIds = new Set<number>()
   private pacedIds = new Set<number>()
   private lastFiller = -1
-  // Speech buffered across pauses until the send word ("okiro") is heard.
+  // Speech buffered across pauses until the send word is heard: the fragment transcripts (for
+  // spotting the word + the live caption) and the raw audio (re-transcribed as ONE stream on send,
+  // which is far more accurate than stitching context-free fragments).
   private pendingUtterance = ''
+  private pendingAudio: Float32Array[] = []
   // One voice turn's latency marks: speech end → transcript → first LLM token → first audio out.
   private tm: { speechEnd: number; stt: number; firstToken: number; firstAudio: number } | null = null
 
@@ -184,6 +196,7 @@ class VoiceEngine {
     this.interrupt()
     this.clearIdle()
     this.pendingUtterance = ''
+    this.pendingAudio = []
     await this.vad.stop()
     set({ state: 'off', pendingConfirm: null, loadProgress: null })
     this.unloadTimer = window.setTimeout(() => this.unload(), UNLOAD_MS)
@@ -350,28 +363,26 @@ class VoiceEngine {
     if (!this.stt) return
     this.tm = { speechEnd: performance.now(), stt: 0, firstToken: 0, firstAudio: 0 }
     set({ state: 'transcribing' })
-    const id = ++this.transcribeSeq
-    const text = await new Promise<string>((resolve) => {
-      this.transcribing.set(id, resolve)
-      this.stt!.postMessage({ type: 'transcribe', id, audio }, [audio.buffer])
-    })
+    // Send-word mode: keep listening through pauses; only hand the whole thing to Arjun once the
+    // send word ends an utterance. Instant commands and yes/no confirmations work without it.
+    const endWord = useVoice.getState().pendingConfirm ? '' : (settings()?.endWord ?? '').trim()
+    if (endWord) this.pushPendingAudio(audio.slice()) // copy before the buffer is transferred away
+    const text = await this.transcribe(audio)
     if (this.tm) this.tm.stt = performance.now()
     if (!this.active) return
     if (!text || NOISE.test(text.trim()) || this.isEchoOfArjun(text)) {
+      if (endWord) this.pendingAudio.pop() // noise/echo doesn't belong in the utterance
       this.backToListening()
       return
     }
 
-    // Send-word mode: keep listening through pauses; only hand the whole thing to Arjun
-    // once the send word ("okiro") ends an utterance. Instant commands and yes/no
-    // confirmations still work on their own, without the word.
-    const endWord = (settings()?.endWord ?? '').trim()
-    if (endWord && !useVoice.getState().pendingConfirm) {
+    if (endWord) {
       const re = new RegExp(`[\\s,]*\\b${fuzzyWord(endWord)}\\b[\\s.!?,]*$`, 'i')
       const combined = this.pendingUtterance ? `${this.pendingUtterance} ${text}` : text
       if (!re.test(text)) {
         if (!this.pendingUtterance && matchIntent(text)) {
           // A lone quick command ("run the tests", "stop") executes immediately.
+          this.pendingAudio = []
           set({ captionUser: text })
           await this.handleUtterance(text)
           return
@@ -381,12 +392,22 @@ class VoiceEngine {
         this.backToListening()
         return
       }
+      const parts = this.pendingAudio
+      this.pendingAudio = []
       this.pendingUtterance = ''
-      const full = combined.replace(re, '').trim()
+      let full = combined.replace(re, '').trim()
       if (!full) {
         // They said just the word: nothing buffered, nothing to send.
         this.backToListening()
         return
+      }
+      if (parts.length > 1 && this.stt) {
+        // Re-transcribe the whole utterance as one stream — fragments decoded alone are rough.
+        const whole = (await this.transcribe(joinAudio(parts), true)).trim()
+        if (!this.active) return
+        const stripped = whole.replace(re, '').trim()
+        if (stripped) full = stripped
+        if (this.tm) this.tm.stt = performance.now()
       }
       set({ captionUser: full })
       await this.handleUtterance(full)
@@ -395,6 +416,23 @@ class VoiceEngine {
 
     set({ captionUser: text })
     await this.handleUtterance(text)
+  }
+
+  private transcribe(audio: Float32Array, long = false): Promise<string> {
+    const id = ++this.transcribeSeq
+    return new Promise<string>((resolve) => {
+      this.transcribing.set(id, resolve)
+      this.stt!.postMessage({ type: 'transcribe', id, audio, long }, [audio.buffer])
+    })
+  }
+
+  /** Keep at most the last ~60s of buffered speech. */
+  private pushPendingAudio(a: Float32Array): void {
+    this.pendingAudio.push(a)
+    let total = this.pendingAudio.reduce((n, x) => n + x.length, 0)
+    while (total > 60 * 16_000 && this.pendingAudio.length > 1) {
+      total -= this.pendingAudio.shift()!.length
+    }
   }
 
   private backToListening(): void {

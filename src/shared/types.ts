@@ -66,7 +66,7 @@ export const DEFAULT_SETTINGS: Settings = {
   onboarded: false,
   lastSyncAt: 0,
   voiceEnabled: true,
-  sttModel: 'onnx-community/moonshine-base-ONNX',
+  sttModel: 'onnx-community/whisper-small.en',
   ttsVoice: 'af_heart',
   ttsSpeed: 1,
   voiceEffort: 'low',
@@ -84,9 +84,9 @@ export const TTS_VOICES: { id: string; label: string }[] = [
 ]
 
 export const STT_MODELS: { id: string; label: string }[] = [
-  { id: 'onnx-community/moonshine-base-ONNX', label: 'Moonshine (fast)' },
-  { id: 'onnx-community/whisper-base.en', label: 'Whisper base' },
-  { id: 'onnx-community/whisper-small.en', label: 'Whisper small (accurate, slower)' }
+  { id: 'onnx-community/whisper-small.en', label: 'Whisper small (accurate) ★' },
+  { id: 'onnx-community/moonshine-base-ONNX', label: 'Moonshine (fastest)' },
+  { id: 'onnx-community/whisper-base.en', label: 'Whisper base' }
 ]
 
 export const SPOILER_LEVELS = ['Nudge', 'Hint', 'Approach', 'Pseudocode', 'Full solution'] as const

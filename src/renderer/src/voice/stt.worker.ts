@@ -39,7 +39,14 @@ ctx.onmessage = async ({ data }: MessageEvent) => {
     } else if (data.type === 'transcribe') {
       if (!asr) throw new Error('Speech recognition is not loaded')
       // English-only models (moonshine, whisper .en) must not get language/task options.
-      const out = await asr(data.audio as Float32Array, { max_new_tokens: 128 })
+      const audio = data.audio as Float32Array
+      const opts: Record<string, unknown> = { max_new_tokens: data.long ? 256 : 128 }
+      if (data.long && model.includes('whisper') && audio.length > 28 * 16_000) {
+        // A full buffered utterance can exceed Whisper's 30s window: decode in strided chunks.
+        opts.chunk_length_s = 28
+        opts.stride_length_s = 2
+      }
+      const out = await asr(audio, opts)
       const text = (Array.isArray(out) ? out[0] : out).text.trim()
       ctx.postMessage({ type: 'result', id: data.id, text })
     }

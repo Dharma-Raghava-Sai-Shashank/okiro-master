@@ -78,7 +78,9 @@ async function setup(req: CoachRequest): Promise<TurnSetup> {
     think,
     numCtx: compact ? 8192 : s.ollamaModel.startsWith('gpt-oss') ? 24576 : 16384,
     keepAlive: -1,
-    numPredict: req.voice ? (deep ? 384 : 192) : undefined,
+    // A generous runaway guard only — a tight cap truncates replies mid-sentence, which reads
+    // as Arjun "stopping in the middle". Barge-in is the real length control in voice.
+    numPredict: req.voice ? (deep ? 768 : 512) : undefined,
     temperature: 0.7
   })
   return { llm, label: llm.label, tools: caps.includes('tools'), compact, historyLimit: req.voice ? 6 : compact ? 8 : 14 }

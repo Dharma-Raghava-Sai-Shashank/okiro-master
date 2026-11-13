@@ -29,15 +29,21 @@ function migrate(d: DatabaseSync): void {
   }[]
   const del = d.prepare('DELETE FROM chat_messages WHERE id = ?')
   for (const r of rows) if (looksLikeToolCallJson(r.content)) del.run(r.id)
-  // Voice v3: move old defaults to the new ones (never-thinking instruct model, female voice, faster STT).
-  const remap: [string, string, string][] = [
-    ['ollamaModel', '"qwen3:4b"', '"qwen3:4b-instruct"'],
-    ['ollamaModel', '"qwen2.5-coder:3b"', '"qwen3:4b-instruct"'],
-    ['ttsVoice', '"am_michael"', '"af_heart"'],
-    ['sttModel', '"onnx-community/whisper-base.en"', '"onnx-community/moonshine-base-ONNX"']
-  ]
-  const up = d.prepare('UPDATE settings SET value = ? WHERE key = ? AND value = ?')
-  for (const [key, from, to] of remap) up.run(to, key, from)
+  // Voice v3: move old defaults to the new ones (never-thinking instruct model, female voice,
+  // accurate STT). Runs once — later manual choices must stick.
+  const MIGR = 'migr.voice-v3'
+  if (!d.prepare('SELECT 1 FROM kv_cache WHERE key = ?').get(MIGR)) {
+    const remap: [string, string, string][] = [
+      ['ollamaModel', '"qwen3:4b"', '"qwen3:4b-instruct"'],
+      ['ollamaModel', '"qwen2.5-coder:3b"', '"qwen3:4b-instruct"'],
+      ['ttsVoice', '"am_michael"', '"af_heart"'],
+      ['sttModel', '"onnx-community/whisper-base.en"', '"onnx-community/whisper-small.en"'],
+      ['sttModel', '"onnx-community/moonshine-base-ONNX"', '"onnx-community/whisper-small.en"']
+    ]
+    const up = d.prepare('UPDATE settings SET value = ? WHERE key = ? AND value = ?')
+    for (const [key, from, to] of remap) up.run(to, key, from)
+    d.prepare('INSERT INTO kv_cache (key, value, fetched_at) VALUES (?, ?, ?)').run(MIGR, '1', Date.now())
+  }
 }
 
 export function getDb(): DatabaseSync {
