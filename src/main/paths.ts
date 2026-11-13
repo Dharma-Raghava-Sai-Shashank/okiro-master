@@ -1,9 +1,11 @@
 import { app } from 'electron'
-import { mkdirSync } from 'node:fs'
+import { existsSync, mkdirSync } from 'node:fs'
 import { join } from 'node:path'
 
 export function resourcesDir(): string {
-  return app.isPackaged ? join(process.resourcesPath, 'resources') : join(app.getAppPath(), 'resources')
+  if (app.isPackaged) return join(process.resourcesPath, 'resources')
+  const root = app.getAppPath()
+  return existsSync(join(root, 'resources')) ? join(root, 'resources') : join(root, '..', '..', 'resources')
 }
 
 export function dataDir(...parts: string[]): string {

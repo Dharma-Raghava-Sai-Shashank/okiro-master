@@ -57,7 +57,13 @@ export default defineConfig({
     resolve: { alias: shared }
   },
   renderer: {
-    resolve: { alias: { ...shared, '@renderer': resolve('src/renderer/src') } },
+    resolve: {
+      alias: {
+        ...shared,
+        '@renderer': resolve('src/renderer/src'),
+        '@ricky0123/vad-web': resolve('node_modules/@ricky0123/vad-web/dist/bundle.min.js')
+      }
+    },
     plugins: [voiceAssets, react(), tailwindcss(), csp],
     // transformers.js uses dynamic imports inside workers, which need ES-module workers.
     worker: { format: 'es' },

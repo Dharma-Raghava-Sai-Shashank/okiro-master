@@ -319,7 +319,7 @@ function ModelAdvice() {
       )}
       {settings.ollamaModel !== rec && (
         <div className="flex flex-wrap items-center gap-2 rounded-xl border border-cyan-400/20 bg-cyan-400/[0.06] px-3 py-2 text-[12px] text-cyan-100/90">
-          Recommended for your {llm.totalMemGb} GB Mac: <b className="font-mono">{rec}</b> (tools + thinking).
+          Recommended for your {llm.totalMemGb} GB Mac: <b className="font-mono">{rec}</b>.
           <div className="flex-1" />
           {hasRec ? (
             <Button size="sm" onClick={() => void updateSettings({ ollamaModel: rec }).then(refreshLlm)}>

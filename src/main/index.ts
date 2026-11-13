@@ -86,6 +86,10 @@ function createWindow(): void {
     if (/^https?:/.test(url)) void shell.openExternal(url)
   })
   const dev = devUrl()
+
+  mainWindow.webContents.on('console-message', (_e, level, message, line, sourceId) => {
+    console.log(`[Renderer ${level}] ${message} (${sourceId}:${line})`)
+  })
   void mainWindow.loadURL(dev ?? `${APP_ORIGIN}/index.html`)
 }
 

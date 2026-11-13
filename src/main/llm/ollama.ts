@@ -80,6 +80,7 @@ export class OllamaProvider implements LlmProvider {
     if (!res.ok) throw new Error(`Ollama: ${(await res.text()).slice(0, 300)}`)
     let content = ''
     let thinking = ''
+    let inThink = false
     const toolCalls: LlmToolCall[] = []
     for await (const chunk of ndjson<OllamaChunk>(res)) {
       if (chunk.error) throw new Error(`Ollama: ${chunk.error}`)
@@ -89,8 +90,39 @@ export class OllamaProvider implements LlmProvider {
         req.onThinking?.(m.thinking)
       }
       if (m?.content) {
-        content += m.content
-        req.onText?.(m.content)
+        let text = m.content
+        if (text.includes('<think>')) {
+          inThink = true
+          text = text.replace('<think>', '')
+        }
+        if (inThink) {
+          const endIdx = text.indexOf('</think>')
+          if (endIdx !== -1) {
+            const thinkPart = text.slice(0, endIdx)
+            if (thinkPart) {
+              thinking += thinkPart
+              req.onThinking?.(thinkPart)
+            }
+            inThink = false
+            text = text.slice(endIdx + 8).trimStart()
+          } else {
+            thinking += text
+            req.onThinking?.(text)
+            text = ''
+          }
+        } else if (text.includes('</think>')) {
+          const endIdx = text.indexOf('</think>')
+          const thinkPart = text.slice(0, endIdx)
+          if (thinkPart) {
+            thinking += thinkPart
+            req.onThinking?.(thinkPart)
+          }
+          text = text.slice(endIdx + 8).trimStart()
+        }
+        if (text) {
+          content += text
+          req.onText?.(text)
+        }
       }
       for (const c of m?.tool_calls ?? []) {
         const args = typeof c.function.arguments === 'string' ? safeJson(c.function.arguments) : c.function.arguments

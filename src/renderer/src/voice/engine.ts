@@ -60,6 +60,34 @@ class VoiceEngine {
   private idleTimer: number | null = null
   private unloadTimer: number | null = null
   private progress = new Map<string, { loaded: number; total: number }>()
+  private recentArjunPhrases: { text: string; time: number }[] = []
+  private lastSpokenAt = 0
+
+  private isEchoWindow(): boolean {
+    if (this.player?.speaking || this.pendingTts > 0 || useVoice.getState().state === 'speaking') return true
+    return Date.now() - this.lastSpokenAt < 600
+  }
+
+  private isEchoOfArjun(text: string): boolean {
+    const clean = text.toLowerCase().replace(/[^a-z0-9 ]/g, '').trim()
+    if (!clean) return true
+    const words = clean.split(/\s+/).filter((w) => w.length > 2)
+    const now = Date.now()
+    for (const phrase of this.recentArjunPhrases) {
+      if (now - phrase.time > 20000) continue
+      const target = phrase.text.toLowerCase().replace(/[^a-z0-9 ]/g, '').trim()
+      if (target.includes(clean) || clean.includes(target)) return true
+      if (words.length > 0) {
+        const targetWords = new Set(target.split(/\s+/))
+        let matches = 0
+        for (const w of words) {
+          if (targetWords.has(w)) matches++
+        }
+        if (matches / words.length >= 0.5) return true
+      }
+    }
+    return false
+  }
 
   constructor() {
     api.on('coach:event', (e) => this.onCoach(e))
@@ -260,12 +288,15 @@ class VoiceEngine {
 
   private onSpeechStart(): void {
     this.clearIdle()
-    const st = useVoice.getState().state
-    if (st === 'speaking' || st === 'thinking') this.interrupt()
+    if (this.isEchoWindow()) return
     set({ state: 'listening', captionUser: '…' })
   }
 
   private async onSpeechEnd(audio: Float32Array): Promise<void> {
+    if (this.isEchoWindow()) {
+      this.backToListening()
+      return
+    }
     if (!this.stt) return
     set({ state: 'transcribing' })
     const id = ++this.transcribeSeq
@@ -274,7 +305,7 @@ class VoiceEngine {
       this.stt!.postMessage({ type: 'transcribe', id, audio }, [audio.buffer])
     })
     if (!this.active) return
-    if (!text || NOISE.test(text.trim())) {
+    if (!text || NOISE.test(text.trim()) || this.isEchoOfArjun(text)) {
       this.backToListening()
       return
     }
@@ -384,6 +415,10 @@ class VoiceEngine {
         break
       case 'error':
         t.done = true
+        if (/abort|cancel/i.test(e.error)) {
+          this.maybeFinish()
+          break
+        }
         this.say(/ollama|fetch|ECONNREFUSED/i.test(e.error) ? "I can't reach my local model. Check Ollama in Settings." : "Sorry, something went wrong on my side.")
         break
     }
@@ -399,6 +434,9 @@ class VoiceEngine {
   private say(text: string): void {
     if (!text.trim() || !this.player) return
     this.clearIdle()
+    this.lastSpokenAt = Date.now()
+    this.recentArjunPhrases.push({ text, time: Date.now() })
+    if (this.recentArjunPhrases.length > 30) this.recentArjunPhrases.shift()
     this.vad.setArjunSpeaking(true)
     const s = settings()
     const speed = s?.ttsSpeed ?? 1
@@ -431,6 +469,7 @@ class VoiceEngine {
 
   private maybeFinish(): void {
     if (this.pendingTts > 0 || this.player?.speaking) return
+    this.lastSpokenAt = Date.now()
     if (this.turn && !this.turn.done) {
       set({ state: 'thinking' })
       return
@@ -442,7 +481,7 @@ class VoiceEngine {
       void this.stop()
       return
     }
-    set({ state: 'listening' })
+    set({ state: 'listening', captionUser: useVoice.getState().captionUser === '…' ? '' : useVoice.getState().captionUser })
     this.armIdle()
   }
 

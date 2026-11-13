@@ -135,7 +135,13 @@ function priorMessages(scope: string, limit: number): LlmMessage[] {
       if (out[out.length - 1]?.role === 'user') out.pop()
       continue
     }
-    out.push({ role: r.role as 'user' | 'assistant', content: r.content.slice(0, 4000) })
+    let content = r.content
+    const thinkEnd = content.indexOf('</think>')
+    if (thinkEnd !== -1) content = content.slice(thinkEnd + 8).trim()
+    content = content.replace(/<think>[\s\S]*?<\/think>/g, '').trim()
+    if (content) {
+      out.push({ role: r.role as 'user' | 'assistant', content: content.slice(0, 4000) })
+    }
   }
   const trimmed = out.slice(-limit)
   while (trimmed.length && trimmed[0].role !== 'user') trimmed.shift()
@@ -285,13 +291,20 @@ async function runTurn(turnId: string, req: CoachRequest, signal: AbortSignal, e
     const msg = saveMessage(scope, 'assistant', content || '(no reply)', reasoning, traces, label)
     emit({ ...base, type: 'done', message: msg })
   } catch (e) {
+    console.error('[Coach Error]', e)
     const aborted = signal.aborted
     const content = gate.shown.trim()
-    if (content && !looksLikeToolCallJson(content)) {
-      const msg = saveMessage(scope, 'assistant', `${content}${aborted ? '\n\n*(stopped)*' : ''}`, reasoning, traces, label)
+    if (aborted) {
+      const finalContent = content && !looksLikeToolCallJson(content) ? `${content}\n\n*(stopped)*` : '*(stopped)*'
+      const msg = saveMessage(scope, 'assistant', finalContent, reasoning, traces, label)
       emit({ ...base, type: 'done', message: msg })
+    } else {
+      if (content && !looksLikeToolCallJson(content)) {
+        const msg = saveMessage(scope, 'assistant', content, reasoning, traces, label)
+        emit({ ...base, type: 'done', message: msg })
+      }
+      emit({ ...base, type: 'error', error: e instanceof Error ? e.message : String(e) })
     }
-    if (!aborted) emit({ ...base, type: 'error', error: e instanceof Error ? e.message : String(e) })
   }
 }
 
